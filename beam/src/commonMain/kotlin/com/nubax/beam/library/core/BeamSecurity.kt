@@ -11,19 +11,16 @@ import javax.crypto.spec.SecretKeySpec
 import java.security.SecureRandom
 import javax.crypto.KeyAgreement
 
-object BeamSecurity {
+internal object BeamSecurity {
     private const val ALGORITHM = "AES/GCM/NoPadding"
     private const val TAG_LENGTH = 128
     private const val IV_LENGTH = 12
-
-    // Esta es tu clave de respaldo o "salt" para fortalecer la derivación
     private const val SHARED_SECRET_SALT = "88b14a9c-074a-44e9-8692-a7d031c6a28c"
-
-    // Esta es la llave que se genera dinámicamente y nunca viaja por la red
+    // Esta llave se genera dinámicamente y nunca viaja por la red
     private var sessionKey: SecretKeySpec? = null
 
     /**
-     * Paso 1: Generar par de claves locales (Pública/Privada)
+     * Generar par de claves locales (Pública/Privada)
      */
     fun generateKeyPair(): KeyPair {
         val keyPairGen = KeyPairGenerator.getInstance("EC")
@@ -32,7 +29,7 @@ object BeamSecurity {
     }
 
     /**
-     * Paso 2: Calcular el secreto compartido (ECDH)
+     * Calcular el secreto compartido (ECDH)
      * Se mezcla la clave privada propia con la pública recibida del otro extremo.
      */
     fun computeSharedSecret(myPrivateKey: PrivateKey, otherPublicKeyBytes: ByteArray) {
@@ -57,7 +54,7 @@ object BeamSecurity {
     }
 
     /**
-     * Paso 3: Encriptar datos usando AES-GCM
+     * Encriptar datos usando AES-GCM
      */
     fun encrypt(data: ByteArray): ByteArray {
         val key = sessionKey ?: throw Exception("Sesión no segura: Clave de sesión no generada")
@@ -74,7 +71,7 @@ object BeamSecurity {
     }
 
     /**
-     * Paso 4: Desencriptar datos usando AES-GCM
+     * Desencriptar datos usando AES-GCM
      */
     fun decrypt(encryptedDataWithIv: ByteArray): ByteArray {
         val key = sessionKey ?: throw Exception("Sesión no segura: Clave de sesión no generada")

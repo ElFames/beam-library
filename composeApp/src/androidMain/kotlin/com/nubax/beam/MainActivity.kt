@@ -15,7 +15,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
-import com.nubax.beam.library.core.Locator
 
 actual fun isAndroid() = true
 enum class PermissionsState {
@@ -30,8 +29,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             val initState = if(hasWifiPermissions(this)) PermissionsState.GRANTED else PermissionsState.REQUESTING
             var state by remember { mutableStateOf(initState) }
-            Locator.androidContext = applicationContext
-            Locator.beamConnection = AndroidBeamConnection()
             val permissionLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.RequestMultiplePermissions()
             ) { permissions ->

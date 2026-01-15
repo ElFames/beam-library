@@ -1,12 +1,22 @@
-package com.nubax.beam
+package com.nubax.beam.library
 
-import com.nubax.beam.library.ble.BeamConnection
-import com.nubax.beam.library.ble.PairingRequest
-import com.nubax.beam.library.ble.PairingResponse
-import com.nubax.beam.library.core.*
-import kotlinx.coroutines.*
+import com.nubax.beam.library.connection.BeamConnection
+import com.nubax.beam.library.core.BeamProtocol
+import com.nubax.beam.library.core.BeamSecurity
+import com.nubax.beam.library.core.Log
+import com.nubax.beam.library.sdk.BeamResult
+import com.nubax.beam.library.sdk.BeamState
+import com.nubax.beam.library.sdk.PairingRequest
+import com.nubax.beam.library.sdk.PairingResponse
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.InputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -24,11 +34,11 @@ class AndroidBeamConnection : BeamConnection {
     private val _incomingData = MutableSharedFlow<ByteArray>()
     override val incomingData = _incomingData.asSharedFlow()
 
-    override suspend fun startPairing(ownToken: String, targetToken: String?): BleResult<BeamState> = withContext(Dispatchers.IO) {
+    override suspend fun startPairing(ownToken: String, targetToken: String?): BeamResult<BeamState> = withContext(Dispatchers.IO) {
         try {
             // 1. Descubrimiento UDP
             val desktopIp = discoverDesktopDevice(targetToken!!)
-                ?: return@withContext BleResult.Failure("No se encontró el Desktop con token: $targetToken")
+                ?: return@withContext BeamResult.Failure("No se encontró el Desktop con token: $targetToken")
 
             val socket = Socket(desktopIp, tcpPort)
             activeSocket = socket
@@ -59,13 +69,13 @@ class AndroidBeamConnection : BeamConnection {
                 Log.i("Clave compartida calculada.")
                 startListeningLoop(socket.getInputStream())
                 Log.i("Conexión segura establecida!")
-                BleResult.Success(BeamState.Connected(deviceToken = targetToken))
+                BeamResult.Success(BeamState.Connected(deviceToken = targetToken))
             } else {
                 socket.close()
-                BleResult.Failure("El Desktop rechazó la conexión o no envió clave: ${response.message}")
+                BeamResult.Failure("El Desktop rechazó la conexión o no envió clave: ${response.message}")
             }
         } catch (e: Exception) {
-            BleResult.Failure("Error de conexión: ${e.message}")
+            BeamResult.Failure("Error de conexión: ${e.message}")
         }
     }
 
@@ -117,14 +127,14 @@ class AndroidBeamConnection : BeamConnection {
         }
     }
 
-    override suspend fun sendRawData(data: ByteArray): BleResult<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun sendRawData(data: ByteArray): BeamResult<Unit> = withContext(Dispatchers.IO) {
         try {
             Log.i("Enviando datos...")
-            val out = activeSocket?.getOutputStream() ?: return@withContext BleResult.Failure("Sin conexión")
+            val out = activeSocket?.getOutputStream() ?: return@withContext BeamResult.Failure("Sin conexión")
             BeamProtocol.sendRaw(out, data)
             Log.i("Datos enviados")
-            BleResult.Success(Unit)
-        } catch (e: Exception) { BleResult.Failure(e.message ?: "Error enviando datos.SendDataRaw.") }
+            BeamResult.Success(Unit)
+        } catch (e: Exception) { BeamResult.Failure(e.message ?: "Error enviando datos.SendDataRaw.") }
     }
 
     override fun close() {

@@ -2,7 +2,7 @@ package com.nubax.beam.library.core
 
 import kotlinx.serialization.json.Json
 
-object BeamProtocol {
+internal object BeamProtocol {
     val json = Json { ignoreUnknownKeys = true }
 
     fun sendRaw(outputStream: java.io.OutputStream, bytes: ByteArray) {
@@ -36,12 +36,10 @@ object BeamProtocol {
         return BeamSecurity.decrypt(buffer)
     }
 
-    // Usamos estas funciones solo en startPairing ANTES de tener la clave
     inline fun <reified T> sendObject(outputStream: java.io.OutputStream, data: T) {
         val jsonString = json.encodeToString(data)
         val bytes = jsonString.encodeToByteArray()
 
-        // Enviamos en plano
         val size = bytes.size
         outputStream.write(size shr 24)
         outputStream.write(size shr 16)

@@ -31,17 +31,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.nubax.beam.library.core.BeamState
+import com.nubax.beam.library.sdk.BeamState
 import com.nubax.beam.library.core.Log
-import com.nubax.beam.library.core.onFailure
-import com.nubax.beam.library.core.onSuccess
+import com.nubax.beam.library.sdk.onFailure
+import com.nubax.beam.library.sdk.onSuccess
 import com.nubax.beam.library.sdk.BeamSdk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import java.util.UUID
-import kotlin.uuid.Uuid
 
 expect fun isAndroid(): Boolean
 expect fun requiredWifiPermissions(): Array<String>
@@ -60,8 +59,8 @@ fun App() {
     val logs by Log.logs.collectAsState()
     val ownToken = if(isAndroid()) "abcde12345(android-token)" else "jihgfe98765(desktop-token)"
     val targetToken = if(isAndroid()) "jihgfe98765(desktop-token)" else null // desktop no necesita conocer el token de android
-    val payment by beamApplication.observeIncoming<Payment>().collectAsState(null)
-    val paymentResponse by beamApplication.observeIncoming<PaymentResponse>().collectAsState(null)
+    val payment by beamApplication.observeIncoming<Payment>(Payment.serializer()).collectAsState(null)
+    val paymentResponse by beamApplication.observeIncoming<PaymentResponse>(PaymentResponse.serializer()).collectAsState(null)
     var message by remember { mutableStateOf("Listo para procesar pago.") }
     var desktopMessage by remember { mutableStateOf("Listo para enviar pago.") }
 
@@ -76,12 +75,18 @@ fun App() {
         paymentResponse?.let {
             desktopMessage = it.message
             delay(2000)
-            desktopMessage = "Listo para enviar pago."
+            desktopMessage = when(beamState) {
+                is BeamState.Connected -> "Listo para enviar pago."
+                is BeamState.Disabled -> "Offline"
+                is BeamState.Connecting -> "Conectando..."
+                is BeamState.Error -> "Error: ${(beamState as BeamState.Error).message}"
+                is BeamState.Activated -> "Listo para emparejamiento."
+            }
+            desktopMessage = if (beamState is BeamState.Connected) "Listo para enviar pago." else "Listo para iniciar emparejamiento."
         }
     }
 
     LaunchedEffect(payment) {
-        Log.i("Payment: $payment")
         message = "Pago recibido: ${payment?.amount}${payment?.currency}\nID:${payment?.id}"
     }
 
@@ -93,10 +98,9 @@ fun App() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-
             Text(
                 text = "Beam test app",
-                fontSize = 32.sp,
+                fontSize = 27.sp,
                 fontWeight = FontWeight.Bold,
                 color = Color.Black
             )
@@ -108,12 +112,12 @@ fun App() {
                         "Connected with: $deviceToken"
                     }
                     is BeamState.Connecting -> "Connecting..."
-                    is BeamState.Offline -> "Offline"
+                    is BeamState.Disabled -> "Offline"
                     is BeamState.Error -> {
                         val errorMessage = (beamState as BeamState.Error).message
                         "Error: $errorMessage"
                     }
-                    is BeamState.Online -> "Online"
+                    is BeamState.Activated -> "Online"
                 },
                 fontSize = 20.sp,
                 color = Color.Black
@@ -141,7 +145,7 @@ fun App() {
                         }
                     },
                     modifier = Modifier.fillMaxWidth(0.95f),
-                    enabled = beamState is BeamState.Offline || beamState is BeamState.Error,
+                    enabled = beamState is BeamState.Disabled || beamState is BeamState.Error,
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = Color.Black,
@@ -160,7 +164,7 @@ fun App() {
                         }
                     },
                     modifier = Modifier.fillMaxWidth(0.9f),
-                    enabled = beamState is BeamState.Online || beamState is BeamState.Error || beamState is BeamState.Connected,
+                    enabled = beamState is BeamState.Activated || beamState is BeamState.Error || beamState is BeamState.Connected,
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = Color.Black,
@@ -190,7 +194,7 @@ fun App() {
                                         id = UUID.randomUUID().toString(),
                                         amount = textFS.text.toString().toDouble(),
                                         currency = "$"
-                                    )).onSuccess {
+                                    ), Payment.serializer()).onSuccess {
                                         Log.i("Payment sent")
                                         desktopMessage = "Pago enviado. Esperando respuesta..."
                                     }.onFailure { Log.i(it) }
@@ -208,7 +212,7 @@ fun App() {
                                     id = payment?.id ?: "f",
                                     status = true,
                                     message = "Pago procesado correctamente."
-                                )).onSuccess {
+                                ), PaymentResponse.serializer()).onSuccess {
                                     message = "Respuesta de pago enviada."
                                     Log.i("Payment response sent")
                                 }.onFailure { Log.i(it) }
