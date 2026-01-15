@@ -47,7 +47,7 @@ internal object BeamSecurity {
         // Fortalecemos el secreto usando SHA-256 junto con tu SHARED_SECRET_SALT
         val digest = MessageDigest.getInstance("SHA-256")
         digest.update(sharedSecret)
-        digest.update(SHARED_SECRET_SALT.toByteArray())
+        digest.update(SHARED_SECRET_SALT.encodeToByteArray())
         val aesKeyBytes = digest.digest()
 
         this.sessionKey = SecretKeySpec(aesKeyBytes, "AES")
