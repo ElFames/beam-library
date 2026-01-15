@@ -11,3 +11,11 @@ plugins {
     alias(libs.plugins.androidKotlinMultiplatformLibrary) apply false
     alias(libs.plugins.androidLint) apply false
 }
+
+subprojects {
+    plugins.withId("com.android.application") {
+        tasks.matching { it.name.startsWith("publish") }.configureEach {
+            enabled = false
+        }
+    }
+}

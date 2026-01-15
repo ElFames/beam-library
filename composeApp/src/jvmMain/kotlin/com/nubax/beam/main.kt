@@ -8,7 +8,7 @@ actual fun isAndroid() = false
 fun main() = application {
     Window(
         onCloseRequest = ::exitApplication,
-        title = "KMP_Beam",
+        title = "Beam Test App",
     ) {
         App()
     }

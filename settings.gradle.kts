@@ -1,4 +1,4 @@
-rootProject.name = "KMP_Beam"
+rootProject.name = "beam-library"
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 pluginManagement {
