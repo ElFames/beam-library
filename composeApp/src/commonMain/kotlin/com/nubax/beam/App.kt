@@ -31,10 +31,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.nubax.beam.library.sdk.BeamState
+import com.nubax.beam.library.sdk.models.BeamState
 import com.nubax.beam.library.core.Log
-import com.nubax.beam.library.sdk.onFailure
-import com.nubax.beam.library.sdk.onSuccess
+import com.nubax.beam.library.sdk.models.onFailure
+import com.nubax.beam.library.sdk.models.onSuccess
 import com.nubax.beam.library.sdk.BeamSdk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -59,8 +59,8 @@ fun App() {
     val logs by Log.logs.collectAsState()
     val ownToken = if(isAndroid()) "abcde12345(android-token)" else "jihgfe98765(desktop-token)"
     val targetToken = if(isAndroid()) "jihgfe98765(desktop-token)" else null // desktop no necesita conocer el token de android
-    val payment by beamApplication.observeIncoming<Payment>(Payment.serializer()).collectAsState(null)
-    val paymentResponse by beamApplication.observeIncoming<PaymentResponse>(PaymentResponse.serializer()).collectAsState(null)
+    val payment by beamApplication.observeIncoming(Payment.serializer()).collectAsState(null)
+    val paymentResponse by beamApplication.observeIncoming(PaymentResponse.serializer()).collectAsState(null)
     var message by remember { mutableStateOf("Listo para procesar pago.") }
     var desktopMessage by remember { mutableStateOf("Listo para enviar pago.") }
 
@@ -141,7 +141,7 @@ fun App() {
                 OutlinedButton(
                     onClick = {
                         coroutineScope.launch(Dispatchers.IO) {
-                            beamApplication.init(ownToken)
+                            beamApplication.init(token = ownToken)
                         }
                     },
                     modifier = Modifier.fillMaxWidth(0.95f),
@@ -197,7 +197,7 @@ fun App() {
                                     ), Payment.serializer()).onSuccess {
                                         Log.i("Payment sent")
                                         desktopMessage = "Pago enviado. Esperando respuesta..."
-                                    }.onFailure { Log.i(it) }
+                                    }.onFailure { Log.e(it) }
                                 }
                             }
                         ) {
@@ -230,6 +230,20 @@ fun App() {
                     ) {
                         Text("Responder Pago OK")
                     }
+                }
+                OutlinedButton(
+                    onClick = beamApplication::disconnect,
+                    modifier = Modifier.fillMaxWidth(0.9f),
+                    enabled = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color.Black,
+                        containerColor = Color.White,
+                        disabledContentColor = Color.Gray,
+                        disabledContainerColor = Color.LightGray
+                    )
+                ) {
+                    Text("Desconectar")
                 }
             }
         }

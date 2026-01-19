@@ -2,12 +2,12 @@ package com.nubax.beam.library
 
 import com.nubax.beam.library.connection.BeamConnection
 import com.nubax.beam.library.core.BeamProtocol
-import com.nubax.beam.library.sdk.BeamResult
 import com.nubax.beam.library.core.BeamSecurity
 import com.nubax.beam.library.core.Log
-import com.nubax.beam.library.sdk.BeamState
-import com.nubax.beam.library.sdk.PairingRequest
-import com.nubax.beam.library.sdk.PairingResponse
+import com.nubax.beam.library.sdk.models.BeamResult
+import com.nubax.beam.library.sdk.models.BeamState
+import com.nubax.beam.library.sdk.models.PairingRequest
+import com.nubax.beam.library.sdk.models.PairingResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -22,146 +22,187 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
+import java.security.SecureRandom
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
-class DesktopBeamConnection : BeamConnection {
+internal class DesktopBeamConnection : BeamConnection {
+
     private val tcpPort = 9999
     private val udpPort = 8888
-    private var serverSocket: ServerSocket? = null
-    private var activeSocket: Socket? = null
+
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var discoveryJob: Job? = null
     private var listeningJob: Job? = null
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val timeout = 15000
+
+    private var serverSocket: ServerSocket? = null
+    private var activeSocket: Socket? = null
 
     private val _incomingData = MutableSharedFlow<ByteArray>()
     override val incomingData = _incomingData.asSharedFlow()
 
+    private fun computeHmac(nonce: ByteArray): ByteArray {
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(BeamSecurity.APP_SECRET.toByteArray(), "HmacSHA256"))
+        return mac.doFinal(nonce)
+    }
+
+    private fun verifyHmac(nonce: ByteArray, received: ByteArray): Boolean {
+        return computeHmac(nonce).contentEquals(received)
+    }
+
+    override fun startDiscovery() {
+        if (discoveryJob != null) return
+
+        Log.i("Iniciando discovery UDP")
+        discoveryJob = scope.launch {
+            DatagramSocket(udpPort).use { socket ->
+                socket.soTimeout = 1000
+                val buffer = ByteArray(1024)
+
+                while (isActive) {
+                    try {
+                        val packet = DatagramPacket(buffer, buffer.size)
+                        socket.receive(packet)
+
+                        val msg = String(packet.data, 0, packet.length)
+                        Log.i("Paquete UDP recibido: $msg")
+                        if (msg == "BEAM_QUERY_DESKTOP") {
+                            val reply = "DESKTOP_HERE".toByteArray()
+                            socket.send(
+                                DatagramPacket(reply, reply.size, packet.address, packet.port)
+                            )
+                            Log.i("Respuesta UDP enviada al cliente")
+                        }
+                    } catch (_: SocketTimeoutException) {
+                        // ignora timeout para check isActive
+                    }
+                }
+            }
+        }
+    }
+
+    override fun stopDiscovery() {
+        Log.i("Deteniendo discovery UDP")
+        discoveryJob?.cancel()
+        discoveryJob = null
+    }
     override suspend fun startPairing(
         ownToken: String,
         targetToken: String?
     ): BeamResult<BeamState> = withContext(Dispatchers.IO) {
+        Log.i("Esperando conexión TCP de Android...")
+
         try {
-            Log.i("Iniciando emparejamiento...")
-            startDiscoveryAnnouncement(ownToken)
+            serverSocket = ServerSocket(tcpPort).apply {
+                soTimeout = 15000
+                reuseAddress = true
+            }
 
-            serverSocket = ServerSocket(tcpPort).apply { reuseAddress = true }
-            val client = serverSocket!!.accept()
+            val client = try {
+                serverSocket!!.accept()
+            } catch (e: SocketTimeoutException) {
+                Log.e("No se recibió intento de conexión")
+                close()
+                return@withContext BeamResult.Failure("Nadie intentó conectar")
+            }
+
+            Log.i("Cliente conectado desde ${client.inetAddress.hostAddress}")
             activeSocket = client
-            stopDiscoveryAnnouncement()
-
             val input = client.getInputStream()
             val out = client.getOutputStream()
 
-            Log.i("Socket TCP entre dispositivos creado! Esperando Pairing request")
-            // 1. Recibe petición (tokens + clave pública de Android)
+            val nonce = ByteArray(16).also { SecureRandom().nextBytes(it) }
+            Log.i("Generando nonce para challenge HMAC")
+            out.write(nonce)
+            out.flush()
+            Log.i("Nonce enviado: ${nonce.joinToString { "%02X".format(it) }}")
+
+            val hmac = ByteArray(32) // HMAC-SHA256 = 32 bytes
+            input.read(hmac)
+            Log.i("HMAC recibido del cliente")
+
+            if (!verifyHmac(nonce, hmac)) {
+                client.close()
+                Log.e("HMAC inválido, cerrando conexión")
+                return@withContext BeamResult.Failure("HMAC inválido, app no autorizada")
+            }
+            Log.i("HMAC verificado correctamente")
+
             val request = BeamProtocol.receiveObject<PairingRequest>(input)
-            Log.i("Recibida petición de emparejamiento: $request")
+            Log.i("PairingRequest recibida: $request")
 
-            // 2. Validar Token
-            val isCorrect = request.targetDesktopToken == ownToken
+            if (request.targetDesktopToken != ownToken) {
+                client.close()
+                Log.e("Token incorrecto, cerrando conexión")
+                return@withContext BeamResult.Failure("Token incorrecto")
+            }
 
-            if (isCorrect) {
-                Log.i("Token correcto! Generando clave privada...")
-                // 3. Seguridad: Generar par de claves propio
-                val myKeyPair = BeamSecurity.generateKeyPair()
-                Log.i("Clave privada generada: ${myKeyPair.private}")
+            val myKeyPair = BeamSecurity.generateKeyPair()
+            Log.i("Clave ECDH generada")
 
-                // 4. Calcular Secreto Compartido (ECDH)
-                BeamSecurity.computeSharedSecret(myKeyPair.private, request.androidPublicKey)
-                Log.i("Secreto compartido calculado.")
+            BeamSecurity.computeSharedSecret(myKeyPair.private, request.androidPublicKey)
+            Log.i("Secreto compartido calculado correctamente")
 
-                // 5. Responder con éxito y nuestra clave pública
-                val response = PairingResponse(
+            BeamProtocol.sendObject(
+                out,
+                PairingResponse(
                     success = true,
-                    message = "Token validado y canal seguro establecido",
+                    message = "OK",
                     desktopPublicKey = myKeyPair.public.encoded
                 )
-                BeamProtocol.sendObject(out, response)
-                Log.i("Respuesta enviada.")
+            )
+            Log.i("PairingResponse enviada")
 
-                startListeningLoop(input)
+            startListeningLoop(input)
+            Log.i("Bucle de escucha iniciado")
 
-                Log.i("Conexión establecida!")
-                BeamResult.Success(BeamState.Connected(deviceToken = request.androidToken))
-            } else {
-                Log.i("Token incorrecto!")
-                val response = PairingResponse(
-                    success = false,
-                    message = "Token incorrecto",
-                    desktopPublicKey = null
-                )
-                BeamProtocol.sendObject(out, response)
-                client.close()
-                Log.i("Socket TCP cerrado.")
-                BeamResult.Failure("Fallo de validación")
-            }
+            BeamResult.Success(BeamState.Connected(request.androidToken))
+
         } catch (e: Exception) {
-            BeamResult.Failure(e.message ?: "Error")
+            Log.e("Error en pairing: ${e.message}")
+            BeamResult.Failure(e.message ?: "Error pairing")
         }
     }
 
-    private fun startDiscoveryAnnouncement(myToken: String) {
-        discoveryJob = scope.launch(Dispatchers.IO) {
-            val udpSocket = DatagramSocket(udpPort)
-            udpSocket.soTimeout = timeout
-            val buffer = ByteArray(1024)
-            while (isActive) {
-                val packet = DatagramPacket(buffer, buffer.size)
-                udpSocket.receive(packet)
-                Log.i("Recibido paquete de descubrimiento.")
-                val msg = String(packet.data, 0, packet.length)
-
-                if (msg == "BEAM_QUERY_DESKTOP:$myToken") {
-                    Log.i("Enviando respuesta de descubrimiento...")
-                    val reply = "DESKTOP_HERE:$myToken".toByteArray()
-                    udpSocket.send(DatagramPacket(reply, reply.size, packet.address, packet.port))
-                    Log.i("Respuesta enviada.")
-                }
-            }
-            Log.i("Cerrando socket UDP.")
-            udpSocket.close()
-        }
-    }
 
     private fun startListeningLoop(input: InputStream) {
         listeningJob?.cancel()
-        Log.i("Iniciando bucle de escucha...")
         listeningJob = scope.launch {
-            try {
-                while (isActive) {
+            Log.i("Iniciando bucle de escucha de datos entrantes")
+            while (isActive) {
+                try {
                     val data = BeamProtocol.receiveRaw(input)
-                    Log.i("Datos recibidos.")
+                    Log.i("Datos recibidos: ${data.size} bytes")
                     _incomingData.emit(data)
+                } catch (e: Exception) {
+                    Log.e("Error en bucle de escucha: ${e.message}")
                 }
-            } catch (e: Exception) {
-                Log.i("Socket cerrado o error de desencriptación. Error: ${e.message}")
             }
         }
     }
 
-    override suspend fun sendRawData(data: ByteArray): BeamResult<Unit> =
-        withContext(Dispatchers.IO) {
-            try {
-                val out = activeSocket?.getOutputStream()
-                    ?: return@withContext BeamResult.Failure("No hay socket")
-                Log.i("Enviando datos..")
-                BeamProtocol.sendRaw(out, data)
-                Log.i("Datos enviados")
-                BeamResult.Success(Unit)
-            } catch (e: Exception) {
-                BeamResult.Failure(e.message ?: "Error")
-            }
+    override suspend fun sendRawData(data: ByteArray): BeamResult<Unit> {
+        return try {
+            Log.i("Enviando datos de ${data.size} bytes")
+            BeamProtocol.sendRaw(withContext(Dispatchers.IO) {
+                activeSocket!!.getOutputStream()
+            }, data)
+            Log.i("Datos enviados correctamente")
+            BeamResult.Success(Unit)
+        } catch (e: Exception) {
+            Log.e("Error enviando datos: ${e.message}")
+            BeamResult.Failure(e.message ?: "Error envío")
         }
+    }
 
     override fun close() {
-        discoveryJob?.cancel()
+        Log.i("Cerrando conexión y limpiando recursos")
+        stopDiscovery()
         listeningJob?.cancel()
         activeSocket?.close()
         serverSocket?.close()
         BeamSecurity.clearSession()
-    }
-
-    private fun stopDiscoveryAnnouncement() {
-        discoveryJob?.cancel()
     }
 }

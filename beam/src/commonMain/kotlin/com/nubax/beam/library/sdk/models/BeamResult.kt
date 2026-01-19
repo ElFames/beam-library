@@ -1,4 +1,4 @@
-package com.nubax.beam.library.sdk
+package com.nubax.beam.library.sdk.models
 
 sealed class BeamResult<out T> {
     data class Success<out T>(val data: T) : BeamResult<T>()

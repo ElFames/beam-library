@@ -1,4 +1,4 @@
-package com.nubax.beam.library.sdk
+package com.nubax.beam.library.sdk.models
 
 sealed class BeamState {
     data object Disabled : BeamState()

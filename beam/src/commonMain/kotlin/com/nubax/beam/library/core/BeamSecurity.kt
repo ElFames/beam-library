@@ -12,12 +12,14 @@ import java.security.SecureRandom
 import javax.crypto.KeyAgreement
 
 internal object BeamSecurity {
+
+    private const val SHARED_SALT = "8Gf9xY3sP8aR5jP3vH11H9qC0yJ6nN8z"
     private const val ALGORITHM = "AES/GCM/NoPadding"
     private const val TAG_LENGTH = 128
     private const val IV_LENGTH = 12
-    private const val SHARED_SECRET_SALT = "88b14a9c-074a-44e9-8692-a7d031c6a28c"
-    // Esta llave se genera dinámicamente y nunca viaja por la red
+
     private var sessionKey: SecretKeySpec? = null
+    const val APP_SECRET = "3Kf9xL2sP8aR4bT9vG1wH7qZ0yJ6nM8d"
 
     /**
      * Generar par de claves locales (Pública/Privada)
@@ -44,12 +46,10 @@ internal object BeamSecurity {
 
         val sharedSecret = keyAgreement.generateSecret()
 
-        // Fortalecemos el secreto usando SHA-256 junto con tu SHARED_SECRET_SALT
         val digest = MessageDigest.getInstance("SHA-256")
         digest.update(sharedSecret)
-        digest.update(SHARED_SECRET_SALT.encodeToByteArray())
+        digest.update(SHARED_SALT.encodeToByteArray())
         val aesKeyBytes = digest.digest()
-
         this.sessionKey = SecretKeySpec(aesKeyBytes, "AES")
     }
 

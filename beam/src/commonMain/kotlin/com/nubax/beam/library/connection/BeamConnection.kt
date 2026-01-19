@@ -1,7 +1,7 @@
 package com.nubax.beam.library.connection
 
-import com.nubax.beam.library.sdk.BeamResult
-import com.nubax.beam.library.sdk.BeamState
+import com.nubax.beam.library.sdk.models.BeamResult
+import com.nubax.beam.library.sdk.models.BeamState
 import kotlinx.coroutines.flow.SharedFlow
 
 interface BeamConnection {
@@ -9,4 +9,6 @@ interface BeamConnection {
     suspend fun startPairing(ownToken: String, targetToken: String? = null): BeamResult<BeamState>
     suspend fun sendRawData(data: ByteArray): BeamResult<Unit>
     fun close()
+    fun stopDiscovery()
+    fun startDiscovery()
 }

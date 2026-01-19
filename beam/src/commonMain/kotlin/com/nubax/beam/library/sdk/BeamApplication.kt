@@ -2,87 +2,64 @@ package com.nubax.beam.library.sdk
 
 import com.nubax.beam.library.connection.BeamConnection
 import com.nubax.beam.library.core.BeamSecurity
+import com.nubax.beam.library.core.Locator
 import com.nubax.beam.library.core.Log
+import com.nubax.beam.library.sdk.models.BeamResult
+import com.nubax.beam.library.sdk.models.BeamState
+import com.nubax.beam.library.sdk.models.onFailure
+import com.nubax.beam.library.sdk.models.onSuccess
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 
 class BeamApplication(
-    private val beamConnection: BeamConnection
+    private val beamConnection: BeamConnection = Locator.beamConnection!!
 ) {
     private lateinit var ownToken: String
 
     private val _state = MutableStateFlow<BeamState>(BeamState.Disabled)
     val state = _state.asStateFlow()
 
-    /**
-     * Inicializa el estado de la conexión (Online si el hardware está listo).
-     */
-    fun init(ownToken: String) {
-        this.ownToken = ownToken
-        Log.i("Own token establecido: $ownToken")
-        // TODO: Check hardware is ready
-        Log.i("Hardware is ready.")
+    fun init(token: String) {
+        ownToken = token
+        beamConnection.startDiscovery()
         _state.value = BeamState.Activated
     }
 
-    /**
-     * Inicia el proceso de emparejamiento.
-     * @param targetToken El token del dispositivo al que nos queremos conectar.
-     */
     suspend fun startPairing(targetToken: String? = null) {
         _state.value = BeamState.Connecting
-        // Enviamos nuestro token y el del objetivo
+
         beamConnection.startPairing(ownToken, targetToken)
             .onSuccess { _state.value = it }
             .onFailure { _state.value = BeamState.Error(it) }
     }
 
-    /**
-     * Envía un objeto serializable.
-     * Se encarga de serializar a JSON y enviarlo a través de la capa segura.
-     */
+    fun disconnect() {
+        beamConnection.close()
+        BeamSecurity.clearSession()
+        _state.value = BeamState.Disabled
+    }
+
     suspend fun <T> send(data: T, serializer: KSerializer<T>): BeamResult<Unit> {
         return try {
             val jsonString = Json.encodeToString(serializer, data)
-            val bytes = jsonString.encodeToByteArray()
-
-            // Enviamos los bytes. La implementación de sendRawData
-            // dentro de la conexión usará BeamProtocol.sendRaw (que encripta).
-            beamConnection.sendRawData(bytes)
+            beamConnection.sendRawData(jsonString.encodeToByteArray())
         } catch (e: Exception) {
-            BeamResult.Failure("Error de envío o encriptación: ${e.message}")
+            BeamResult.Failure(e.message ?: "Error de envío")
         }
     }
 
-    /**
-     * Observa los datos entrantes.
-     * Los bytes recibidos ya vienen desencriptados por la capa inferior (Connection/Protocol).
-     */
     fun <T> observeIncoming(serializer: KSerializer<T>): Flow<T> {
         return beamConnection.incomingData
-            .map { bytes ->
+            .mapNotNull {
                 runCatching {
-                    // Los bytes que llegan aquí ya han pasado por BeamSecurity.decrypt
-                    // gracias al loop de escucha en la clase Connection.
-                    val jsonString = bytes.decodeToString()
-                    Json.decodeFromString(serializer, jsonString)
+                    Json.decodeFromString(serializer, it.decodeToString())
                 }.getOrNull()
             }
-            .filterNotNull()
-    }
-
-    /**
-     * Cierra la conexión, limpia las claves de sesión y resetea el estado.
-     */
-    fun disconnect() {
-        beamConnection.close()
-        // Es vital limpiar las claves de sesión al desconectar para seguridad
-        BeamSecurity.clearSession()
-        _state.value = BeamState.Disabled
     }
 }

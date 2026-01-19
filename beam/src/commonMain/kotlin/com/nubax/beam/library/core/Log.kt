@@ -1,19 +1,29 @@
 package com.nubax.beam.library.core
 
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
 object Log {
-    val logs = MutableStateFlow<List<String>>(emptyList())
+    private val _logs = MutableStateFlow<List<String>>(emptyList())
+    val logs = _logs.asStateFlow()
+
+    fun i(message: String) {
+       log(tag = "INFO", message = message)
+    }
+
+    fun e(message: String) {
+        log(tag = "ERROR", message = message)
+    }
 
     @OptIn(ExperimentalTime::class)
-    fun i(message: String) {
+    private fun log(tag: String, message: String) {
         val now = Clock.System.now().toString().replace("Z", "").replace("T", " ")
-        logs.update {
+        _logs.update {
             val list = it.toMutableList()
-            list.add("[INFO] - $now - $message")
+            list.add("[$tag] - $now - $message")
             list.toList()
         }
     }
