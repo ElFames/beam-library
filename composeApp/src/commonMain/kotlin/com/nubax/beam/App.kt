@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -57,8 +58,8 @@ fun App() {
     val coroutineScope = rememberCoroutineScope()
     val beamState by beamApplication.state.collectAsState()
     val logs by Log.logs.collectAsState()
-    val ownToken = if(isAndroid()) "abcde12345(android-token)" else "jihgfe98765(desktop-token)"
-    val targetToken = if(isAndroid()) "jihgfe98765(desktop-token)" else null // desktop no necesita conocer el token de android
+    val ownToken = if(isAndroid()) "(android-token)" else "(desktop-token)"
+    val targetToken = if(isAndroid()) "(desktop-token)" else null // desktop no necesita conocer el token de android
     val payment by beamApplication.observeIncoming(Payment.serializer()).collectAsState(null)
     val paymentResponse by beamApplication.observeIncoming(PaymentResponse.serializer()).collectAsState(null)
     var message by remember { mutableStateOf("Listo para procesar pago.") }
@@ -154,26 +155,61 @@ fun App() {
                         disabledContainerColor = Color.LightGray
                     )
                 ) {
-                    Text("Activar Wi-Fi Direct")
+                    Text("Iniciar SDK")
                 }
 
-                OutlinedButton(
-                    onClick = {
-                        coroutineScope.launch(Dispatchers.IO) {
-                            beamApplication.startPairing(targetToken)
+                if (isAndroid()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            modifier = Modifier.weight(3f),
+                            value = targetToken ?: "",
+                            onValueChange = {},
+                            label = { Text("Conectar con") },
+                            readOnly = true,
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        OutlinedButton(
+                            onClick = {
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    beamApplication.startPairing(targetToken)
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            enabled = beamState is BeamState.Activated || beamState is BeamState.Error || beamState is BeamState.Connected,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = Color.Black,
+                                containerColor = Color.White,
+                                disabledContentColor = Color.Gray,
+                                disabledContainerColor = Color.LightGray
+                            )
+                        ) {
+                            Text("Emparejar")
                         }
-                    },
-                    modifier = Modifier.fillMaxWidth(0.9f),
-                    enabled = beamState is BeamState.Activated || beamState is BeamState.Error || beamState is BeamState.Connected,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color.Black,
-                        containerColor = Color.White,
-                        disabledContentColor = Color.Gray,
-                        disabledContainerColor = Color.LightGray
-                    )
-                ) {
-                    Text("Iniciar Emparejamiento")
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = {
+                            coroutineScope.launch(Dispatchers.IO) {
+                                beamApplication.startPairing(targetToken)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(0.9f),
+                        enabled = beamState is BeamState.Activated || beamState is BeamState.Error || beamState is BeamState.Connected,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color.Black,
+                            containerColor = Color.White,
+                            disabledContentColor = Color.Gray,
+                            disabledContainerColor = Color.LightGray
+                        )
+                    ) {
+                        Text("Iniciar Emparejamiento")
+                    }
                 }
 
                 if (!isAndroid()) {
