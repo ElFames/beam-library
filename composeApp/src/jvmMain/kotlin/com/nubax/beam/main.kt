@@ -2,6 +2,11 @@ package com.nubax.beam
 
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import com.nubax.beam.library.connectivity.DesktopPinganilloController
+import com.nubax.beam.library.storage.DesktopBeamStorage
+import com.nubax.beam.media.DesktopImagePicker
+import com.nubax.beam.media.DesktopReceivedFileSaver
+import com.nubax.beam.media.DesktopWifiJoiner
 
 actual fun isAndroid() = false
 
@@ -10,7 +15,13 @@ fun main() = application {
         onCloseRequest = ::exitApplication,
         title = "Beam Test App",
     ) {
-        App()
+        App(
+            storage = DesktopBeamStorage(),
+            imagePicker = DesktopImagePicker(),
+            fileSaver = DesktopReceivedFileSaver(),
+            wifiJoiner = DesktopWifiJoiner(),
+            pinganilloController = DesktopPinganilloController()
+        )
     }
 }
 

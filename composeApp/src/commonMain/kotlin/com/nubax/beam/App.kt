@@ -7,11 +7,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -21,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -29,16 +27,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.nubax.beam.library.sdk.models.BeamState
+import com.nubax.beam.library.connection.PairingRequestEvent
+import com.nubax.beam.library.connectivity.HotspotController
+import com.nubax.beam.library.connectivity.PinganilloConnectionState
+import com.nubax.beam.library.connectivity.PinganilloController
+import com.nubax.beam.library.connectivity.PinganilloDefaults
+import com.nubax.beam.library.core.BeamStorage
 import com.nubax.beam.library.core.Log
-import com.nubax.beam.library.sdk.models.onFailure
-import com.nubax.beam.library.sdk.models.onSuccess
 import com.nubax.beam.library.sdk.BeamSdk
+import com.nubax.beam.library.sdk.models.BeamState
+import com.nubax.beam.library.sdk.models.MediaMessage
+import com.nubax.beam.library.sdk.models.onFailure
+import com.nubax.beam.media.ImagePicker
+import com.nubax.beam.media.ReceivedFileSaver
+import com.nubax.beam.media.WifiJoiner
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import java.util.UUID
@@ -48,240 +53,281 @@ expect fun requiredWifiPermissions(): Array<String>
 expect fun hasWifiPermissions(context: Any): Boolean
 
 @Serializable
-data class Payment(val id: String, val amount: Double, val currency: String)
-@Serializable
-data class PaymentResponse(val id: String, val status: Boolean, val message: String)
+data class ChatMessage(val text: String)
 
 @Composable
-fun App() {
-    val beamApplication by remember { mutableStateOf(BeamSdk.init()) }
+fun App(
+    storage: BeamStorage,
+    imagePicker: ImagePicker,
+    fileSaver: ReceivedFileSaver,
+    hotspotController: HotspotController? = null,
+    wifiJoiner: WifiJoiner? = null,
+    pinganilloController: PinganilloController? = null
+) {
+    val beamApplication by remember { mutableStateOf(BeamSdk.init(storage)) }
     val coroutineScope = rememberCoroutineScope()
     val beamState by beamApplication.state.collectAsState()
     val logs by Log.logs.collectAsState()
-    val ownToken = if(isAndroid()) "(android-token)" else "(desktop-token)"
-    val targetToken = if(isAndroid()) "(desktop-token)" else null // desktop no necesita conocer el token de android
-    val payment by beamApplication.observeIncoming(Payment.serializer()).collectAsState(null)
-    val paymentResponse by beamApplication.observeIncoming(PaymentResponse.serializer()).collectAsState(null)
-    var message by remember { mutableStateOf("Listo para procesar pago.") }
-    var desktopMessage by remember { mutableStateOf("Listo para enviar pago.") }
+    val discovered by beamApplication.discoveredDevices.collectAsState()
+    val connectedPeers by beamApplication.connectedPeers.collectAsState()
+    val deviceName = if (isAndroid()) "Android" else "Desktop"
 
-    LaunchedEffect(message) {
-        if (message == "Respuesta de pago enviada.") {
-            delay(1000)
-            message = "Listo para recibir pagos."
+    var pendingPairing by remember { mutableStateOf<PairingRequestEvent?>(null) }
+    val incomingChat by beamApplication.observeIncoming(ChatMessage.serializer()).collectAsState(null)
+    val incomingMedia by beamApplication.observeIncoming(MediaMessage.serializer()).collectAsState(null)
+    val chatLog = remember { mutableStateListOf<String>() }
+    var statusMessage by remember { mutableStateOf("Pulsa Iniciar SDK para anunciarte y empezar a descubrir.") }
+    var sendProgress by remember { mutableStateOf<Float?>(null) }
+
+    var manualHost by remember { mutableStateOf("") }
+    var messageField by remember { mutableStateOf("") }
+    var joinSsid by remember { mutableStateOf("") }
+    var joinPassword by remember { mutableStateOf("") }
+
+    val hotspotInfo = hotspotController?.hotspot?.collectAsState()?.value
+    val hotspotError = hotspotController?.error?.collectAsState()?.value
+
+    val pinganilloState = pinganilloController?.state?.collectAsState()?.value
+    val pinganilloBinder = pinganilloController?.networkBinder?.collectAsState()?.value
+
+    LaunchedEffect(Unit) {
+        beamApplication.pairingRequests.collect { event ->
+            pendingPairing = event
         }
     }
 
-    LaunchedEffect(paymentResponse) {
-        paymentResponse?.let {
-            desktopMessage = it.message
-            delay(2000)
-            desktopMessage = when(beamState) {
-                is BeamState.Connected -> "Listo para enviar pago."
-                is BeamState.Disabled -> "Offline"
-                is BeamState.Connecting -> "Conectando..."
-                is BeamState.Error -> "Error: ${(beamState as BeamState.Error).message}"
-                is BeamState.Activated -> "Listo para emparejamiento."
-            }
-            desktopMessage = if (beamState is BeamState.Connected) "Listo para enviar pago." else "Listo para iniciar emparejamiento."
-        }
+    // El binder solo existe en Android (red "solo local" del pinganillo); en Desktop
+    // pinganilloBinder es siempre null y esto no hace nada — unirse a la WiFi ya basta.
+    LaunchedEffect(pinganilloBinder) {
+        pinganilloBinder?.let { beamApplication.attachNetwork(it) } ?: beamApplication.detachNetwork()
     }
 
-    LaunchedEffect(payment) {
-        message = "Pago recibido: ${payment?.amount}${payment?.currency}\nID:${payment?.id}"
+    LaunchedEffect(incomingChat) {
+        incomingChat?.let { (peerId, message) -> chatLog.add("${peerId.take(8)}: ${message.text}") }
+    }
+
+    LaunchedEffect(incomingMedia) {
+        incomingMedia?.let { (peerId, media) ->
+            val path = fileSaver.save(media.name, media.bytes)
+            chatLog.add("${peerId.take(8)} envió ${media.name} (${media.bytes.size / 1024} KB) -> $path")
+        }
     }
 
     Scaffold { padding ->
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
+            modifier = Modifier.fillMaxSize().padding(padding),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = "Beam test app",
-                fontSize = 27.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.Black
-            )
+            Text("Beam test app ($deviceName)", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.Black)
 
             Text(
-                text = "Device Id: $ownToken\nStatus:\n" + when (beamState) {
-                    is BeamState.Connected -> {
-                        val deviceToken = (beamState as BeamState.Connected).deviceToken
-                        "Connected with: $deviceToken"
-                    }
-                    is BeamState.Connecting -> "Connecting..."
-                    is BeamState.Disabled -> "Offline"
-                    is BeamState.Error -> {
-                        val errorMessage = (beamState as BeamState.Error).message
-                        "Error: $errorMessage"
-                    }
-                    is BeamState.Activated -> "Online"
-                },
-                fontSize = 20.sp,
+                text = "Id: ${runCatching { beamApplication.deviceId }.getOrDefault("(sin iniciar)")}\n" +
+                    "Estado: ${beamState.describe()}\nConectados: ${connectedPeers.joinToString().ifEmpty { "ninguno" }}",
+                fontSize = 16.sp,
                 color = Color.Black
             )
 
             LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth(0.9f)
-                    .fillMaxHeight(0.22f),
-                horizontalAlignment = Alignment.Start,
+                modifier = Modifier.fillMaxWidth(0.9f).fillMaxHeight(0.12f),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                items(logs.size) { index ->
-                    Text(logs[index])
-                }
+                items(logs.size) { index -> Text(logs[index], fontSize = 11.sp) }
             }
 
-            if (isAndroid()) Text(message) else Text(desktopMessage)
+            Text(statusMessage, fontSize = 13.sp)
 
             Column {
                 OutlinedButton(
-                    onClick = {
-                        coroutineScope.launch(Dispatchers.IO) {
-                            beamApplication.init(token = ownToken)
-                        }
-                    },
+                    onClick = { beamApplication.start(deviceName) },
                     modifier = Modifier.fillMaxWidth(0.95f),
-                    enabled = beamState is BeamState.Disabled || beamState is BeamState.Error,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color.Black,
-                        containerColor = Color.White,
-                        disabledContentColor = Color.Gray,
-                        disabledContainerColor = Color.LightGray
-                    )
-                ) {
-                    Text("Iniciar SDK")
+                    enabled = beamState is BeamState.Disabled,
+                    shape = RoundedCornerShape(12.dp)
+                ) { Text("Iniciar SDK") }
+
+                if (hotspotController != null) {
+                    OutlinedButton(
+                        onClick = { hotspotController.start() },
+                        modifier = Modifier.fillMaxWidth(0.95f),
+                        enabled = hotspotInfo == null
+                    ) { Text("Activar hotspot local (sin misma red)") }
+
+                    hotspotInfo?.let {
+                        Text("Red: ${it.ssid}  ·  clave: ${it.passphrase}", fontSize = 13.sp)
+                    }
+                    hotspotError?.let { Text("Error: $it", fontSize = 12.sp, color = Color.Red) }
                 }
 
-                if (isAndroid()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                if (wifiJoiner != null) {
+                    // Android elige el SSID/contraseña al azar cada vez (no se puede fijar desde
+                    // una app normal), así que aquí se teclean una vez los que muestre la pantalla
+                    // del móvil — como conectar a cualquier WiFi nueva, no una IP a mano.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
-                            modifier = Modifier.weight(3f),
-                            value = targetToken ?: "",
-                            onValueChange = {},
-                            label = { Text("Conectar con") },
-                            readOnly = true,
-                            singleLine = true,
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        OutlinedButton(
-                            onClick = {
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    beamApplication.startPairing(targetToken)
-                                }
-                            },
+                            value = joinSsid,
+                            onValueChange = { joinSsid = it },
                             modifier = Modifier.weight(1f),
-                            enabled = beamState is BeamState.Activated || beamState is BeamState.Error || beamState is BeamState.Connected,
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = Color.Black,
-                                containerColor = Color.White,
-                                disabledContentColor = Color.Gray,
-                                disabledContainerColor = Color.LightGray
-                            )
-                        ) {
-                            Text("Emparejar")
-                        }
-                    }
-                } else {
-                    OutlinedButton(
-                        onClick = {
-                            coroutineScope.launch(Dispatchers.IO) {
-                                beamApplication.startPairing(targetToken)
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(0.9f),
-                        enabled = beamState is BeamState.Activated || beamState is BeamState.Error || beamState is BeamState.Connected,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = Color.Black,
-                            containerColor = Color.White,
-                            disabledContentColor = Color.Gray,
-                            disabledContainerColor = Color.LightGray
+                            label = { Text("SSID del móvil") },
+                            singleLine = true
                         )
-                    ) {
-                        Text("Iniciar Emparejamiento")
-                    }
-                }
-
-                if (!isAndroid()) {
-                    Row {
-                        val textFS by remember { mutableStateOf(TextFieldState("")) }
-
                         OutlinedTextField(
-                            state = textFS,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.fillMaxWidth(0.5f),
-                            placeholder = { Text("Escribe un mensaje", color = Color.Gray) }
+                            value = joinPassword,
+                            onValueChange = { joinPassword = it },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Contraseña") },
+                            singleLine = true
                         )
-                        OutlinedButton(
-                            modifier = Modifier.padding(10.dp),
-                            onClick = {
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    beamApplication.send(Payment(
-                                        id = UUID.randomUUID().toString(),
-                                        amount = textFS.text.toString().toDouble(),
-                                        currency = "$"
-                                    ), Payment.serializer()).onSuccess {
-                                        Log.i("Payment sent")
-                                        desktopMessage = "Pago enviado. Esperando respuesta..."
-                                    }.onFailure { Log.e(it) }
-                                }
-                            }
-                        ) {
-                            Text("Enviar pago")
-                        }
                     }
-                } else {
                     OutlinedButton(
                         onClick = {
                             coroutineScope.launch(Dispatchers.IO) {
-                                beamApplication.send(PaymentResponse(
-                                    id = payment?.id ?: "f",
-                                    status = true,
-                                    message = "Pago procesado correctamente."
-                                ), PaymentResponse.serializer()).onSuccess {
-                                    message = "Respuesta de pago enviada."
-                                    Log.i("Payment response sent")
-                                }.onFailure { Log.i(it) }
+                                wifiJoiner.join(joinSsid, joinPassword)
+                                    .onSuccess { statusMessage = "Unido a $joinSsid" }
+                                    .onFailure { statusMessage = "No se pudo unir a $joinSsid: ${it.message}" }
                             }
                         },
-                        modifier = Modifier.fillMaxWidth(0.9f),
-                        enabled = beamState is BeamState.Connected,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = Color.Black,
-                            containerColor = Color.White,
-                            disabledContentColor = Color.Gray,
-                            disabledContainerColor = Color.LightGray
-                        )
-                    ) {
-                        Text("Responder Pago OK")
+                        modifier = Modifier.fillMaxWidth(0.95f),
+                        enabled = joinSsid.isNotBlank()
+                    ) { Text("Unirse a esa red") }
+                }
+
+                if (pinganilloController != null) {
+                    // Credenciales fijas de fábrica (PinganilloDefaults): a diferencia del
+                    // hotspot del móvil, el pinganillo siempre se anuncia con el mismo
+                    // SSID/clave, así que aquí no hace falta teclear nada.
+                    OutlinedButton(
+                        onClick = { pinganilloController.connect() },
+                        modifier = Modifier.fillMaxWidth(0.95f),
+                        enabled = pinganilloState !is PinganilloConnectionState.Connected &&
+                            pinganilloState !is PinganilloConnectionState.Connecting
+                    ) { Text("Vincular pinganillo (${PinganilloDefaults.AP_SSID})") }
+
+                    when (pinganilloState) {
+                        is PinganilloConnectionState.Connecting -> Text("Conectando con el pinganillo...", fontSize = 12.sp)
+                        is PinganilloConnectionState.Connected -> Text("Pinganillo conectado ✓", fontSize = 12.sp)
+                        is PinganilloConnectionState.Failed -> Text("Error: ${pinganilloState.message}", fontSize = 12.sp, color = Color.Red)
+                        else -> {}
                     }
                 }
-                OutlinedButton(
-                    onClick = beamApplication::disconnect,
-                    modifier = Modifier.fillMaxWidth(0.9f),
-                    enabled = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color.Black,
-                        containerColor = Color.White,
-                        disabledContentColor = Color.Gray,
-                        disabledContainerColor = Color.LightGray
-                    )
-                ) {
-                    Text("Desconectar")
+
+                Text("Dispositivos descubiertos:", fontSize = 13.sp)
+                LazyColumn(modifier = Modifier.fillMaxWidth(0.9f).fillMaxHeight(0.1f)) {
+                    items(discovered.size) { index ->
+                        val device = discovered[index]
+                        Text(
+                            "${device.name} (${device.id.take(8)})" +
+                                if (device.trusted) " ✓" else " sin emparejar",
+                            fontSize = 12.sp
+                        )
+                    }
                 }
+
+                pendingPairing?.let { request ->
+                    Column {
+                        Text("Emparejamiento con ${request.name}: código ${request.fingerprint}")
+                        Row {
+                            OutlinedButton(onClick = {
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    beamApplication.confirmPairing(request.peerId)
+                                    pendingPairing = null
+                                }
+                            }) { Text("Coincide, confirmar") }
+                            OutlinedButton(onClick = {
+                                beamApplication.rejectPairing(request.peerId)
+                                pendingPairing = null
+                            }) { Text("Rechazar") }
+                        }
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = manualHost,
+                        onValueChange = { manualHost = it },
+                        modifier = Modifier.weight(2f),
+                        label = { Text("IP manual (fallback)") },
+                        singleLine = true
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            coroutineScope.launch(Dispatchers.IO) {
+                                beamApplication.connectTo(manualHost)
+                                    .onFailure { statusMessage = "Error conectando: $it" }
+                            }
+                        },
+                        enabled = beamState !is BeamState.Disabled
+                    ) { Text("Conectar") }
+                }
+
+                Text("Chat:", fontSize = 13.sp)
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth(0.9f).fillMaxHeight(0.15f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    items(chatLog.size) { index -> Text(chatLog[index], fontSize = 13.sp) }
+                }
+
+                Row {
+                    OutlinedTextField(
+                        value = messageField,
+                        onValueChange = { messageField = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Escribe un mensaje") }
+                    )
+                    OutlinedButton(
+                        modifier = Modifier.padding(10.dp),
+                        enabled = connectedPeers.isNotEmpty() && messageField.isNotBlank(),
+                        onClick = {
+                            val target = connectedPeers.firstOrNull() ?: return@OutlinedButton
+                            val text = messageField
+                            coroutineScope.launch(Dispatchers.IO) {
+                                beamApplication.send(target, ChatMessage(text), ChatMessage.serializer())
+                                    .onFailure { statusMessage = "Error enviando: $it" }
+                            }
+                            chatLog.add("yo: $text")
+                            messageField = ""
+                        }
+                    ) { Text("Enviar") }
+                }
+
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(0.9f),
+                    enabled = connectedPeers.isNotEmpty(),
+                    onClick = {
+                        val target = connectedPeers.firstOrNull() ?: return@OutlinedButton
+                        coroutineScope.launch(Dispatchers.IO) {
+                            val picked = imagePicker.pick() ?: return@launch
+                            val media = MediaMessage(
+                                id = UUID.randomUUID().toString(),
+                                name = picked.name,
+                                description = "",
+                                mimeType = picked.mimeType,
+                                bytes = picked.bytes
+                            )
+                            sendProgress = 0f
+                            beamApplication.send(target, media, MediaMessage.serializer()) { progress ->
+                                sendProgress = progress
+                            }.onFailure { statusMessage = "Error enviando imagen: $it" }
+                            sendProgress = null
+                            chatLog.add("yo envié ${picked.name} (${picked.bytes.size / 1024} KB)")
+                        }
+                    }
+                ) { Text(sendProgress?.let { "Enviando... ${(it * 100).toInt()}%" } ?: "Enviar imagen") }
+
+                OutlinedButton(
+                    onClick = { beamApplication.shutdown() },
+                    modifier = Modifier.fillMaxWidth(0.9f),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Black)
+                ) { Text("Desconectar todo") }
             }
         }
     }
+}
+
+private fun BeamState.describe(): String = when (this) {
+    is BeamState.Connected -> "Conectado con ${this.deviceToken}"
+    is BeamState.Connecting -> "Conectando..."
+    is BeamState.Disabled -> "Apagado"
+    is BeamState.Error -> "Error: ${this.message}"
+    is BeamState.Activated -> "Descubriendo..."
 }

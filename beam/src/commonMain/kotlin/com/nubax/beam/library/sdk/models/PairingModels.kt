@@ -2,16 +2,24 @@ package com.nubax.beam.library.sdk.models
 
 import kotlinx.serialization.Serializable
 
+/**
+ * Primer mensaje del handshake TCP: cada lado se presenta con su identidad estable.
+ * No lleva secretos, solo la clave pública (que es pública por definición).
+ */
 @Serializable
-data class PairingRequest(
-    val androidToken: String,
-    val targetDesktopToken: String,
-    val androidPublicKey: ByteArray // Clave pública ECDH de Android
+internal data class HandshakeHello(
+    val id: String,
+    val name: String,
+    val publicKeyBase64: String
 )
 
+/**
+ * Clave efímera ECDH de esta sesión, firmada con la clave de identidad de quien la envía.
+ * La firma evita que alguien intercepte la conexión y sustituya la clave efímera por la suya:
+ * solo el dueño de la identidad anunciada en el [HandshakeHello] pudo haber firmado esto.
+ */
 @Serializable
-data class PairingResponse(
-    val success: Boolean,
-    val desktopPublicKey: ByteArray?, // Clave pública ECDH de Desktop (null si falla)
-    val message: String
+internal data class EphemeralOffer(
+    val publicKeyBase64: String,
+    val signatureBase64: String
 )
