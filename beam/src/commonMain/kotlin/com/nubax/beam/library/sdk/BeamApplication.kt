@@ -2,12 +2,14 @@ package com.nubax.beam.library.sdk
 
 import com.nubax.beam.library.connection.BeamConnection
 import com.nubax.beam.library.connection.DiscoveredDevice
-import com.nubax.beam.library.connection.PairingRequestEvent
+import com.nubax.beam.library.connection.LinkEvent
 import com.nubax.beam.library.connectivity.NetworkSocketBinder
 import com.nubax.beam.library.core.BeamStorage
+import com.nubax.beam.library.core.DeviceHistoryStore
 import com.nubax.beam.library.core.DeviceIdentity
+import com.nubax.beam.library.core.LinkedDevice
 import com.nubax.beam.library.core.Locator
-import com.nubax.beam.library.core.TrustStore
+import com.nubax.beam.library.core.PeerKind
 import com.nubax.beam.library.sdk.models.BeamResult
 import com.nubax.beam.library.sdk.models.BeamState
 import com.nubax.beam.library.sdk.models.onFailure
@@ -30,7 +32,7 @@ class BeamApplication internal constructor(
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private lateinit var identity: DeviceIdentity
-    private lateinit var trustStore: TrustStore
+    private lateinit var history: DeviceHistoryStore
 
     private val _state = MutableStateFlow<BeamState>(BeamState.Disabled)
     val state: StateFlow<BeamState> = _state.asStateFlow()
@@ -38,13 +40,16 @@ class BeamApplication internal constructor(
     val deviceId: String get() = identity.id
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> get() = beamConnection.discoveredDevices
     val connectedPeers: StateFlow<List<String>> get() = beamConnection.connectedPeers
-    val pairingRequests: Flow<PairingRequestEvent> get() = beamConnection.pairingRequests
+    val linkEvents: Flow<LinkEvent> get() = beamConnection.linkEvents
+
+    /** Código que este Desktop está mostrando ahora mismo para que un Android se empareje (null si no aplica). */
+    val pairingCode: StateFlow<String?> get() = beamConnection.pairingCode
 
     /** Genera (o recupera) la identidad de este dispositivo y empieza a anunciarse/descubrir. */
-    fun start(deviceName: String) {
+    fun start(deviceName: String, kind: PeerKind) {
         identity = DeviceIdentity.loadOrCreate(storage)
-        trustStore = TrustStore(storage)
-        beamConnection.start(identity, trustStore, deviceName)
+        history = DeviceHistoryStore(storage)
+        beamConnection.start(identity, history, deviceName, kind)
         _state.value = BeamState.Activated
 
         beamConnection.connectedPeers.onEach { peers ->
@@ -63,18 +68,32 @@ class BeamApplication internal constructor(
             .onFailure { _state.value = BeamState.Error(it) }
     }
 
-    /** El usuario confirmó que el código de verificación coincide en ambas pantallas. */
-    suspend fun confirmPairing(peerId: String): BeamResult<Unit> = beamConnection.confirmPairing(peerId)
+    /**
+     * Empareja con un pinganillo: [ssid]/[password] son los que trae en su tarjeta
+     * de fábrica. Conocerlos ya es la prueba de autorización — no hace falta ningún
+     * paso de confirmación adicional. La app debe haberse unido a esa red WiFi antes
+     * de llamar a esto (ver PinganilloController).
+     */
+    suspend fun pairPinganillo(host: String, port: Int = 9999): BeamResult<Unit> =
+        beamConnection.pairPinganillo(host, port)
 
-    fun rejectPairing(peerId: String) = beamConnection.rejectPairing(peerId)
+    /** Empareja con un Desktop mandando el [code] que se está leyendo en su pantalla. */
+    suspend fun pairDesktopWithCode(host: String, port: Int, code: String): BeamResult<Unit> =
+        beamConnection.pairDesktopWithCode(host, port, code)
+
+    /** Desvincula localmente; si el otro lado está conectado ahora mismo, se le avisa. */
+    fun unlink(deviceId: String) = beamConnection.unlink(deviceId)
 
     fun disconnect(peerId: String) = beamConnection.disconnect(peerId)
 
-    /** Ids de dispositivos ya emparejados (aunque no estén conectados ahora mismo). */
-    fun trustedPeerIds(): List<String> = trustStore.all().map { it.id }
+    /** Historial completo de dispositivos (vinculados o no) con los que se ha interactuado. */
+    fun linkedDevices(): List<LinkedDevice> = history.all()
+
+    /** El dispositivo activo (vinculado ahora mismo) de un tipo dado, si lo hay. */
+    fun activeDevice(kind: PeerKind): LinkedDevice? = history.activeDevice(kind)
 
     /**
-     * Adjunta una red adicional (p. ej. la del pinganillo una vez [PinganilloController]
+     * Adjunta una red adicional (p. ej. la del pinganillo una vez [com.nubax.beam.library.connectivity.PinganilloController]
      * la ha unido) para que el discovery/handshake también intente esa vía. Ver
      * [com.nubax.beam.library.connection.BeamConnection.attachNetwork].
      */

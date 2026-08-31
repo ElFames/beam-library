@@ -19,6 +19,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -29,14 +30,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.nubax.beam.library.connection.PairingRequestEvent
 import com.nubax.beam.library.connectivity.HotspotController
 import com.nubax.beam.library.connectivity.PinganilloConnectionState
 import com.nubax.beam.library.connectivity.PinganilloController
 import com.nubax.beam.library.connectivity.PinganilloDefaults
 import com.nubax.beam.library.core.BeamStorage
 import com.nubax.beam.library.core.Log
+import com.nubax.beam.library.core.PeerKind
 import com.nubax.beam.library.sdk.BeamSdk
+import com.nubax.beam.library.sdk.models.AudioMessage
 import com.nubax.beam.library.sdk.models.BeamState
 import com.nubax.beam.library.sdk.models.MediaMessage
 import com.nubax.beam.library.sdk.models.onFailure
@@ -71,10 +73,12 @@ fun App(
     val discovered by beamApplication.discoveredDevices.collectAsState()
     val connectedPeers by beamApplication.connectedPeers.collectAsState()
     val deviceName = if (isAndroid()) "Android" else "Desktop"
+    val myKind = if (isAndroid()) PeerKind.ANDROID else PeerKind.DESKTOP
 
-    var pendingPairing by remember { mutableStateOf<PairingRequestEvent?>(null) }
     val incomingChat by beamApplication.observeIncoming(ChatMessage.serializer()).collectAsState(null)
     val incomingMedia by beamApplication.observeIncoming(MediaMessage.serializer()).collectAsState(null)
+    val incomingAudio by beamApplication.observeIncoming(AudioMessage.serializer()).collectAsState(null)
+    val pairingCode by beamApplication.pairingCode.collectAsState()
     val chatLog = remember { mutableStateListOf<String>() }
     var statusMessage by remember { mutableStateOf("Pulsa Iniciar SDK para anunciarte y empezar a descubrir.") }
     var sendProgress by remember { mutableStateOf<Float?>(null) }
@@ -83,6 +87,7 @@ fun App(
     var messageField by remember { mutableStateOf("") }
     var joinSsid by remember { mutableStateOf("") }
     var joinPassword by remember { mutableStateOf("") }
+    val codeFieldByDeviceId = remember { mutableStateMapOf<String, String>() }
 
     val hotspotInfo = hotspotController?.hotspot?.collectAsState()?.value
     val hotspotError = hotspotController?.error?.collectAsState()?.value
@@ -91,9 +96,7 @@ fun App(
     val pinganilloBinder = pinganilloController?.networkBinder?.collectAsState()?.value
 
     LaunchedEffect(Unit) {
-        beamApplication.pairingRequests.collect { event ->
-            pendingPairing = event
-        }
+        beamApplication.linkEvents.collect { event -> chatLog.add("[vinculación] $event") }
     }
 
     // El binder solo existe en Android (red "solo local" del pinganillo); en Desktop
@@ -110,6 +113,17 @@ fun App(
         incomingMedia?.let { (peerId, media) ->
             val path = fileSaver.save(media.name, media.bytes)
             chatLog.add("${peerId.take(8)} envió ${media.name} (${media.bytes.size / 1024} KB) -> $path")
+        }
+    }
+
+    // Sirve para el bring-up del pinganillo: confirma visualmente que el audio
+    // capturado por su mic llega de verdad, sin necesitar reproducirlo.
+    LaunchedEffect(incomingAudio) {
+        incomingAudio?.let { (peerId, audio) ->
+            chatLog.add(
+                "${peerId.take(8)} audio: seq=${audio.seq} isFinal=${audio.isFinal} " +
+                    "${audio.pcm.size}B @ ${audio.sampleRateHz}Hz"
+            )
         }
     }
 
@@ -139,7 +153,7 @@ fun App(
 
             Column {
                 OutlinedButton(
-                    onClick = { beamApplication.start(deviceName) },
+                    onClick = { beamApplication.start(deviceName, myKind) },
                     modifier = Modifier.fillMaxWidth(0.95f),
                     enabled = beamState is BeamState.Disabled,
                     shape = RoundedCornerShape(12.dp)
@@ -210,32 +224,60 @@ fun App(
                     }
                 }
 
-                Text("Dispositivos descubiertos:", fontSize = 13.sp)
-                LazyColumn(modifier = Modifier.fillMaxWidth(0.9f).fillMaxHeight(0.1f)) {
-                    items(discovered.size) { index ->
-                        val device = discovered[index]
-                        Text(
-                            "${device.name} (${device.id.take(8)})" +
-                                if (device.trusted) " ✓" else " sin emparejar",
-                            fontSize = 12.sp
-                        )
-                    }
+                // Solo aplica al lado Desktop: mientras no haya ningún Android vinculado,
+                // Aircom genera y muestra este código; Android lo teclea para emparejar.
+                pairingCode?.let { code ->
+                    Text("Código de emparejamiento: $code", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 }
 
-                pendingPairing?.let { request ->
-                    Column {
-                        Text("Emparejamiento con ${request.name}: código ${request.fingerprint}")
-                        Row {
-                            OutlinedButton(onClick = {
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    beamApplication.confirmPairing(request.peerId)
-                                    pendingPairing = null
+                Text("Dispositivos descubiertos:", fontSize = 13.sp)
+                LazyColumn(modifier = Modifier.fillMaxWidth(0.9f).fillMaxHeight(0.18f)) {
+                    items(discovered.size) { index ->
+                        val device = discovered[index]
+                        Column {
+                            Text(
+                                "${device.name} (${device.id.take(8)}) [${device.kind}]" +
+                                    if (device.trusted) " ✓ vinculado" else " sin emparejar",
+                                fontSize = 12.sp
+                            )
+                            if (!device.trusted) {
+                                when (device.kind) {
+                                    PeerKind.PINGANILLO -> {
+                                        // Las credenciales WiFi ya se verificaron al unirse a su
+                                        // red (botón de arriba); aquí solo falta el handshake.
+                                        OutlinedButton(onClick = {
+                                            coroutineScope.launch(Dispatchers.IO) {
+                                                beamApplication.pairPinganillo(device.address, device.port)
+                                                    .onFailure { statusMessage = "Error emparejando: $it" }
+                                            }
+                                        }) { Text("Emparejar pinganillo") }
+                                    }
+                                    PeerKind.DESKTOP -> {
+                                        val codeField = codeFieldByDeviceId[device.id] ?: ""
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            OutlinedTextField(
+                                                value = codeField,
+                                                onValueChange = { codeFieldByDeviceId[device.id] = it },
+                                                modifier = Modifier.weight(1f),
+                                                label = { Text("Código mostrado en el Desktop") },
+                                                singleLine = true
+                                            )
+                                            OutlinedButton(
+                                                enabled = codeField.isNotBlank(),
+                                                onClick = {
+                                                    coroutineScope.launch(Dispatchers.IO) {
+                                                        beamApplication.pairDesktopWithCode(device.address, device.port, codeField)
+                                                            .onFailure { statusMessage = "Error emparejando: $it" }
+                                                    }
+                                                }
+                                            ) { Text("Emparejar") }
+                                        }
+                                    }
+                                    PeerKind.ANDROID -> {} // Desktop/pinganillo no inician emparejamiento hacia un móvil
                                 }
-                            }) { Text("Coincide, confirmar") }
-                            OutlinedButton(onClick = {
-                                beamApplication.rejectPairing(request.peerId)
-                                pendingPairing = null
-                            }) { Text("Rechazar") }
+                            } else {
+                                OutlinedButton(onClick = { beamApplication.unlink(device.id) }) { Text("Desvincular") }
+                            }
                         }
                     }
                 }

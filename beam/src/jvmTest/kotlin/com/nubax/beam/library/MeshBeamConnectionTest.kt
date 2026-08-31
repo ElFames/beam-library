@@ -2,14 +2,13 @@ package com.nubax.beam.library
 
 import com.nubax.beam.library.connection.MeshBeamConnection
 import com.nubax.beam.library.core.BeamStorage
+import com.nubax.beam.library.core.PeerKind
 import com.nubax.beam.library.sdk.BeamApplication
+import com.nubax.beam.library.sdk.models.BeamResult
 import com.nubax.beam.library.sdk.models.MediaMessage
-import com.nubax.beam.library.sdk.models.onFailure
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -24,37 +23,34 @@ private class InMemoryStorage : BeamStorage {
 
 /**
  * Prueba de extremo a extremo dentro de un mismo proceso JVM: dos "dispositivos"
- * (identidad, trust store y transporte totalmente independientes) se conectan por
- * loopback, pasan por el handshake con firma+ECDH, confirman el pairing por primera
- * vez (como haría un usuario tras comparar el código en pantalla) y se mandan una
- * imagen de verdad. Sirve para verificar el diseño sin depender de dos dispositivos
- * físicos ni de que el broadcast UDP funcione en este entorno.
+ * (identidad, historial y transporte totalmente independientes) se conectan por
+ * loopback, pasan por el handshake con firma+ECDH, se emparejan con el flujo de
+ * código de Desktop (como haría Android leyendo el código en la pantalla de
+ * Desktop) y se mandan una imagen de verdad. Sirve para verificar el diseño sin
+ * depender de dos dispositivos físicos ni de que el broadcast UDP funcione en
+ * este entorno.
  */
 class MeshBeamConnectionTest {
 
     @Test
-    fun `dos peers se emparejan y se pasan una imagen byte a byte`() = runBlocking {
-        val appA = BeamApplication(InMemoryStorage(), MeshBeamConnection(beaconPort = 18881, tcpPort = 19991))
-        val appB = BeamApplication(InMemoryStorage(), MeshBeamConnection(beaconPort = 18882, tcpPort = 19992))
-
-        val scope = CoroutineScope(Dispatchers.Default)
-        val autoConfirmA = scope.launch { appA.pairingRequests.collect { appA.confirmPairing(it.peerId) } }
-        val autoConfirmB = scope.launch { appB.pairingRequests.collect { appB.confirmPairing(it.peerId) } }
+    fun `dos peers se emparejan por codigo y se pasan una imagen byte a byte`() = runBlocking {
+        val desktop = BeamApplication(InMemoryStorage(), MeshBeamConnection(beaconPort = 18881, tcpPort = 19991))
+        val android = BeamApplication(InMemoryStorage(), MeshBeamConnection(beaconPort = 18882, tcpPort = 19992))
 
         try {
-            appA.start("DeviceA")
-            appB.start("DeviceB")
+            desktop.start("DeviceDesktop", PeerKind.DESKTOP)
+            android.start("DeviceAndroid", PeerKind.ANDROID)
 
-            appB.connectTo("127.0.0.1", 19991).onFailure {
-                throw AssertionError("No se pudo conectar B->A: $it")
-            }
+            val code = withTimeout(5_000) { desktop.pairingCode.filterNotNull().first() }
+            val pairResult = android.pairDesktopWithCode("127.0.0.1", 19991, code)
+            assertTrue(pairResult is BeamResult.Success, "Emparejamiento falló: $pairResult")
 
             withTimeout(10_000) {
-                appA.connectedPeers.first { it.isNotEmpty() }
-                appB.connectedPeers.first { it.isNotEmpty() }
+                desktop.connectedPeers.first { it.isNotEmpty() }
+                android.connectedPeers.first { it.isNotEmpty() }
             }
-            assertEquals(listOf(appB.deviceId), appA.connectedPeers.value)
-            assertEquals(listOf(appA.deviceId), appB.connectedPeers.value)
+            assertEquals(listOf(android.deviceId), desktop.connectedPeers.value)
+            assertEquals(listOf(desktop.deviceId), android.connectedPeers.value)
 
             val originalBytes = ByteArray(200_000) { (it % 256).toByte() } // simula una foto pequeña
             val sent = MediaMessage(
@@ -66,14 +62,14 @@ class MeshBeamConnectionTest {
             )
 
             var lastProgress = 0f
-            val sendResult = appA.send(appB.deviceId, sent, MediaMessage.serializer()) { progress ->
+            val sendResult = desktop.send(android.deviceId, sent, MediaMessage.serializer()) { progress ->
                 lastProgress = progress
             }
-            assertTrue(sendResult is com.nubax.beam.library.sdk.models.BeamResult.Success, "Envío falló: $sendResult")
+            assertTrue(sendResult is BeamResult.Success, "Envío falló: $sendResult")
             assertEquals(1f, lastProgress, "El progreso debería terminar en 100%")
 
             val received = withTimeout(10_000) {
-                appB.observeIncoming(MediaMessage.serializer()).first().second
+                android.observeIncoming(MediaMessage.serializer()).first().second
             }
 
             assertEquals(sent.id, received.id)
@@ -82,10 +78,8 @@ class MeshBeamConnectionTest {
             assertEquals(sent.mimeType, received.mimeType)
             assertTrue(originalBytes.contentEquals(received.bytes), "Los bytes recibidos no coinciden con los enviados")
         } finally {
-            autoConfirmA.cancel()
-            autoConfirmB.cancel()
-            appA.shutdown()
-            appB.shutdown()
+            desktop.shutdown()
+            android.shutdown()
             delay(200) // deja que los sockets se cierren limpiamente antes de terminar
         }
     }

@@ -1,5 +1,11 @@
 #pragma once
 
+// mbedTLS >= 3.0 renombra los campos internos de sus structs (X, Y, Z, grp, Q, d...)
+// tras la macro MBEDTLS_PRIVATE a menos que se pida explícitamente acceso directo
+// "a la antigua" — necesario porque beam_crypto.cpp accede a mine->grp/Q/d a mano
+// para el ECDH en vez de pasar por la API de más alto nivel.
+#define MBEDTLS_ALLOW_PRIVATE_ACCESS
+
 #include <cstdint>
 #include <string>
 #include <vector>

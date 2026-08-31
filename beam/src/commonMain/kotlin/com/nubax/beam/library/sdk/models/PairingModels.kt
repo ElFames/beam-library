@@ -1,15 +1,20 @@
 package com.nubax.beam.library.sdk.models
 
+import com.nubax.beam.library.core.PeerKind
 import kotlinx.serialization.Serializable
 
 /**
  * Primer mensaje del handshake TCP: cada lado se presenta con su identidad estable.
- * No lleva secretos, solo la clave pública (que es pública por definición).
+ * No lleva secretos, solo la clave pública (que es pública por definición). [kind]
+ * es necesario para que quien recibe sepa qué flujo de emparejamiento aplica
+ * (credenciales para un pinganillo, código para un desktop) y para aplicar la
+ * invariante de "un activo por tipo" del historial de dispositivos.
  */
 @Serializable
 internal data class HandshakeHello(
     val id: String,
     val name: String,
+    val kind: PeerKind,
     val publicKeyBase64: String
 )
 

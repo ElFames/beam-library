@@ -18,8 +18,10 @@ extern "C" void app_main(void) {
     beam_crypto::init();
     beam_crypto::load_or_create_identity();
 
-    // 3) Protocolo Beam: beacon UDP + handshake TCP, símetrico con Android/Desktop.
-    //    Cualquier AudioMessage que llegue de un peer se manda al altavoz.
+    // 3) Protocolo Aircom: beacon UDP + servidor TCP (solo acceptor, nunca conecta
+    //    hacia fuera). Autovincula al primer Android que complete el handshake si
+    //    aún no hay nadie vinculado; cualquier AudioMessage que llegue del Android
+    //    vinculado se manda al altavoz.
     beam_protocol::start("Pinganillo", [](const std::string& /*peer_id*/, const std::vector<uint8_t>& plaintext) {
         audio::handle_incoming(plaintext);
     });

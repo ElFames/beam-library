@@ -9,11 +9,13 @@
 
 #include "cJSON.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
+#include "nvs.h"
 
 namespace beam_protocol {
 
@@ -22,6 +24,7 @@ constexpr char TAG[] = "beam_protocol";
 
 std::string g_device_name;
 MessageHandler g_on_message;
+std::string g_bonded_android_id; // vacío == FABRICA (nadie vinculado todavía)
 
 struct Peer {
     std::string id;
@@ -30,8 +33,45 @@ struct Peer {
 };
 
 std::vector<Peer> g_peers;
-std::vector<std::string> g_connecting_ids;
 SemaphoreHandle_t g_peers_mutex;
+
+int g_udp_socket = -1;
+int g_tcp_server_socket = -1;
+
+// ---------------------------------------------------------------------------
+// Persistencia de vinculación
+// ---------------------------------------------------------------------------
+
+void load_bonded_id() {
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
+    char buf[40] = {0};
+    size_t len = sizeof(buf);
+    if (nvs_get_str(handle, NVS_KEY_BONDED_ANDROID_ID, buf, &len) == ESP_OK) {
+        g_bonded_android_id = buf;
+    }
+    nvs_close(handle);
+}
+
+void save_bonded_id(const std::string& id) {
+    g_bonded_android_id = id;
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_set_str(handle, NVS_KEY_BONDED_ANDROID_ID, id.c_str());
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
+
+void clear_bonded_id() {
+    g_bonded_android_id.clear();
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_erase_key(handle, NVS_KEY_BONDED_ANDROID_ID);
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Framing: 4 bytes big-endian de longitud + payload. Igual que BeamProtocol.kt.
@@ -91,32 +131,50 @@ cJSON* read_plain_json(int fd) {
 }
 
 // ---------------------------------------------------------------------------
-// Peers
+// Mensajes de control (ver ControlMessage.kt): JSON con "type" discriminador.
 // ---------------------------------------------------------------------------
 
-bool is_known_peer_locked(const std::string& id) {
-    for (auto& p : g_peers) if (p.id == id) return true;
-    for (auto& id2 : g_connecting_ids) if (id2 == id) return true;
-    return false;
+std::vector<uint8_t> build_link_state_changed_desvinculado() {
+    cJSON* msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "link_state_changed");
+    cJSON_AddStringToObject(msg, "state", "DESVINCULADO");
+    char* text = cJSON_PrintUnformatted(msg);
+    std::vector<uint8_t> bytes(text, text + strlen(text));
+    cJSON_free(text);
+    cJSON_Delete(msg);
+    return bytes;
 }
 
-void mark_connecting(const std::string& id) {
-    xSemaphoreTake(g_peers_mutex, portMAX_DELAY);
-    g_connecting_ids.push_back(id);
-    xSemaphoreGive(g_peers_mutex);
+/** true si YA se gestionó aquí (no hay que pasarlo a la app). */
+bool try_handle_control_message(const std::string& peer_id, const std::vector<uint8_t>& plaintext) {
+    std::string text(plaintext.begin(), plaintext.end());
+    cJSON* json = cJSON_Parse(text.c_str());
+    if (!json) return false;
+
+    cJSON* type_item = cJSON_GetObjectItem(json, "type");
+    if (!cJSON_IsString(type_item)) { cJSON_Delete(json); return false; }
+
+    bool handled = false;
+    if (strcmp(type_item->valuestring, "link_state_changed") == 0) {
+        cJSON* state_item = cJSON_GetObjectItem(json, "state");
+        if (cJSON_IsString(state_item) && strcmp(state_item->valuestring, "DESVINCULADO") == 0) {
+            ESP_LOGI(TAG, "%s nos avisa de que ya no estamos vinculados -> reinicio a FABRICA", peer_id.c_str());
+            clear_bonded_id();
+            handled = true;
+            cJSON_Delete(json);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
+            return true; // no debería llegar aquí
+        }
+        handled = true;
+    }
+    cJSON_Delete(json);
+    return handled;
 }
 
-void unmark_connecting(const std::string& id) {
-    xSemaphoreTake(g_peers_mutex, portMAX_DELAY);
-    g_connecting_ids.erase(
-        std::remove(g_connecting_ids.begin(), g_connecting_ids.end(), id), g_connecting_ids.end());
-    xSemaphoreGive(g_peers_mutex);
-}
-
-void register_peer(const std::string& id, int fd, std::unique_ptr<beam_crypto::SecureChannel> channel);
-void read_loop_task(void* arg);
-
-struct ReadLoopArgs { std::string id; int fd; };
+// ---------------------------------------------------------------------------
+// Peers
+// ---------------------------------------------------------------------------
 
 void cleanup_peer(const std::string& id) {
     xSemaphoreTake(g_peers_mutex, portMAX_DELAY);
@@ -131,15 +189,7 @@ void cleanup_peer(const std::string& id) {
     ESP_LOGI(TAG, "Peer %s desconectado", id.c_str());
 }
 
-void register_peer(const std::string& id, int fd, std::unique_ptr<beam_crypto::SecureChannel> channel) {
-    xSemaphoreTake(g_peers_mutex, portMAX_DELAY);
-    g_peers.push_back(Peer{id, fd, std::move(channel)});
-    xSemaphoreGive(g_peers_mutex);
-    ESP_LOGI(TAG, "Peer conectado: %s (total=%d)", id.c_str(), (int)g_peers.size());
-
-    auto* args = new ReadLoopArgs{id, fd};
-    xTaskCreate(read_loop_task, "beam_read", 4096, args, 5, nullptr);
-}
+struct ReadLoopArgs { std::string id; int fd; };
 
 void read_loop_task(void* arg) {
     std::unique_ptr<ReadLoopArgs> args(static_cast<ReadLoopArgs*>(arg));
@@ -158,42 +208,51 @@ void read_loop_task(void* arg) {
             ESP_LOGE(TAG, "Mensaje de %s no se pudo descifrar", args->id.c_str());
             continue;
         }
-        if (g_on_message) g_on_message(args->id, plaintext);
+        if (!try_handle_control_message(args->id, plaintext) && g_on_message) {
+            g_on_message(args->id, plaintext);
+        }
     }
     cleanup_peer(args->id);
     vTaskDelete(nullptr);
 }
 
+void register_peer(const std::string& id, int fd, std::unique_ptr<beam_crypto::SecureChannel> channel) {
+    xSemaphoreTake(g_peers_mutex, portMAX_DELAY);
+    g_peers.push_back(Peer{id, fd, std::move(channel)});
+    xSemaphoreGive(g_peers_mutex);
+    ESP_LOGI(TAG, "Peer conectado: %s (total=%d)", id.c_str(), (int)g_peers.size());
+
+    auto* args = new ReadLoopArgs{id, fd};
+    xTaskCreate(read_loop_task, "beam_read", 4096, args, 5, nullptr);
+}
+
 // ---------------------------------------------------------------------------
-// Handshake — réplica exacta de performHandshake en MeshBeamConnection.kt
+// Handshake — solo acceptor (el pinganillo nunca conecta hacia fuera).
 // ---------------------------------------------------------------------------
 
-void perform_handshake(int fd, bool is_initiator) {
+void perform_handshake_as_acceptor(int fd) {
     std::string my_id = beam_crypto::device_id();
+
+    cJSON* their_hello = read_plain_json(fd);
+    if (!their_hello) { close(fd); return; }
 
     cJSON* my_hello = cJSON_CreateObject();
     cJSON_AddStringToObject(my_hello, "id", my_id.c_str());
     cJSON_AddStringToObject(my_hello, "name", g_device_name.c_str());
+    cJSON_AddStringToObject(my_hello, "kind", "PINGANILLO");
     cJSON_AddStringToObject(my_hello, "publicKeyBase64",
         beam_crypto::to_base64(beam_crypto::identity_public_der()).c_str());
-
-    cJSON* their_hello = nullptr;
-    if (is_initiator) {
-        if (!write_plain_json(fd, my_hello)) { cJSON_Delete(my_hello); close(fd); return; }
-        their_hello = read_plain_json(fd);
-    } else {
-        their_hello = read_plain_json(fd);
-        if (their_hello) write_plain_json(fd, my_hello);
-    }
+    write_plain_json(fd, my_hello);
     cJSON_Delete(my_hello);
-    if (!their_hello) { close(fd); return; }
 
     std::string their_id = cJSON_GetObjectItem(their_hello, "id")->valuestring;
-    std::string their_name = cJSON_GetObjectItem(their_hello, "name")->valuestring;
     std::string their_pub_b64 = cJSON_GetObjectItem(their_hello, "publicKeyBase64")->valuestring;
     cJSON_Delete(their_hello);
 
     if (their_id == my_id) { close(fd); return; }
+
+    cJSON* their_offer = read_plain_json(fd);
+    if (!their_offer) { close(fd); return; }
 
     auto* ephemeral = beam_crypto::generate_ephemeral();
     auto ephemeral_pub_der = beam_crypto::ephemeral_public_der(ephemeral);
@@ -202,27 +261,18 @@ void perform_handshake(int fd, bool is_initiator) {
     cJSON* my_offer = cJSON_CreateObject();
     cJSON_AddStringToObject(my_offer, "publicKeyBase64", beam_crypto::to_base64(ephemeral_pub_der).c_str());
     cJSON_AddStringToObject(my_offer, "signatureBase64", beam_crypto::to_base64(signature).c_str());
-
-    cJSON* their_offer = nullptr;
-    if (is_initiator) {
-        if (!write_plain_json(fd, my_offer)) { cJSON_Delete(my_offer); beam_crypto::free_ephemeral(ephemeral); close(fd); return; }
-        their_offer = read_plain_json(fd);
-    } else {
-        their_offer = read_plain_json(fd);
-        if (their_offer) write_plain_json(fd, my_offer);
-    }
+    write_plain_json(fd, my_offer);
     cJSON_Delete(my_offer);
-    if (!their_offer) { beam_crypto::free_ephemeral(ephemeral); close(fd); return; }
 
     std::string their_eph_b64 = cJSON_GetObjectItem(their_offer, "publicKeyBase64")->valuestring;
     std::string their_sig_b64 = cJSON_GetObjectItem(their_offer, "signatureBase64")->valuestring;
     cJSON_Delete(their_offer);
 
-    auto their_identity_pub_der = beam_crypto::from_base64(their_pub_b64);
+    auto their_identity_der = beam_crypto::from_base64(their_pub_b64);
     auto their_ephemeral_der = beam_crypto::from_base64(their_eph_b64);
     auto their_signature = beam_crypto::from_base64(their_sig_b64);
 
-    bool valid = beam_crypto::verify_with_public_der(their_identity_pub_der, their_ephemeral_der, their_signature);
+    bool valid = beam_crypto::verify_with_public_der(their_identity_der, their_ephemeral_der, their_signature);
     if (!valid) {
         ESP_LOGE(TAG, "Firma inválida de %s, cerrando conexión", their_id.c_str());
         beam_crypto::free_ephemeral(ephemeral);
@@ -235,80 +285,37 @@ void perform_handshake(int fd, bool is_initiator) {
     if (shared_secret.empty()) { close(fd); return; }
 
     auto channel = std::make_unique<beam_crypto::SecureChannel>(shared_secret);
-    // Sin TrustStore de por medio: el pinganillo confía en cualquiera que complete el
-    // handshake criptográfico (la puerta de seguridad real la pone el móvil/desktop).
+
+    if (!g_bonded_android_id.empty() && g_bonded_android_id != their_id) {
+        // Ya vinculados con OTRO Android: rechazar, este no es el nuestro.
+        ESP_LOGI(TAG, "Rechazando a %s: ya vinculado con %s", their_id.c_str(), g_bonded_android_id.c_str());
+        auto rejected = channel->encrypt(build_link_state_changed_desvinculado());
+        write_framed(fd, rejected);
+        close(fd);
+        return;
+    }
+
+    if (g_bonded_android_id.empty()) {
+        // FABRICA: conocer las credenciales del AP ya es la prueba de autorización.
+        save_bonded_id(their_id);
+        ESP_LOGI(TAG, "Vinculado con %s", their_id.c_str());
+    }
+
     register_peer(their_id, fd, std::move(channel));
 }
 
-// ---------------------------------------------------------------------------
-// Discovery (beacon UDP)
-// ---------------------------------------------------------------------------
-
-int g_udp_socket = -1;
-int g_tcp_server_socket = -1;
-
-void attempt_connect(const std::string& host, int port, const std::string& expected_id) {
-    mark_connecting(expected_id);
-    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    struct sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, host.c_str(), &addr.sin_addr);
-    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
-        perform_handshake(fd, /*is_initiator=*/true);
-    } else {
-        ESP_LOGE(TAG, "No se pudo conectar a %s:%d", host.c_str(), port);
-        close(fd);
-    }
-    unmark_connecting(expected_id);
-}
-
-struct ConnectTaskArgs { std::string host; int port; std::string id; };
-
-void connect_task(void* arg) {
-    std::unique_ptr<ConnectTaskArgs> args(static_cast<ConnectTaskArgs*>(arg));
-    attempt_connect(args->host, args->port, args->id);
-    vTaskDelete(nullptr);
-}
-
-void on_beacon_received(const std::string& id, const std::string& name, int tcp_port, const std::string& address) {
-    (void)name;
-    if (id == beam_crypto::device_id()) return;
-
-    xSemaphoreTake(g_peers_mutex, portMAX_DELAY);
-    bool known = is_known_peer_locked(id);
-    xSemaphoreGive(g_peers_mutex);
-    if (known) return;
-
-    std::string my_id = beam_crypto::device_id();
-    // Misma regla de arbitraje que en Kotlin: solo el id lexicográficamente menor conecta.
-    if (my_id < id) {
-        auto* args = new ConnectTaskArgs{address, tcp_port, id};
-        xTaskCreate(connect_task, "beam_connect", 4096, args, 5, nullptr);
-    }
-    // Si mi id es mayor, no hago nada: espero a que el otro me conecte (acceptLoop).
-}
-
-void beacon_listen_task(void*) {
-    char buf[512];
+void accept_task(void*) {
     while (true) {
-        struct sockaddr_in from{};
-        socklen_t from_len = sizeof(from);
-        ssize_t n = recvfrom(g_udp_socket, buf, sizeof(buf) - 1, 0, (struct sockaddr*)&from, &from_len);
-        if (n <= 0) continue;
-        buf[n] = '\0';
-
-        cJSON* json = cJSON_Parse(buf);
-        if (!json) continue;
-        cJSON* id_item = cJSON_GetObjectItem(json, "id");
-        cJSON* name_item = cJSON_GetObjectItem(json, "name");
-        cJSON* port_item = cJSON_GetObjectItem(json, "tcpPort");
-        if (cJSON_IsString(id_item) && cJSON_IsString(name_item) && cJSON_IsNumber(port_item)) {
-            char addr_str[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &from.sin_addr, addr_str, sizeof(addr_str));
-            on_beacon_received(id_item->valuestring, name_item->valuestring, port_item->valueint, addr_str);
-        }
-        cJSON_Delete(json);
+        struct sockaddr_in client_addr{};
+        socklen_t len = sizeof(client_addr);
+        int client_fd = accept(g_tcp_server_socket, (struct sockaddr*)&client_addr, &len);
+        if (client_fd < 0) continue;
+        // El handshake puede bloquear un rato; que no frene el accept() de otros intentos.
+        xTaskCreate([](void* arg) {
+            int fd = reinterpret_cast<intptr_t>(arg);
+            perform_handshake_as_acceptor(fd);
+            vTaskDelete(nullptr);
+        }, "beam_accept_hs", 6144, reinterpret_cast<void*>(static_cast<intptr_t>(client_fd)), 5, nullptr);
     }
 }
 
@@ -322,6 +329,7 @@ void beacon_send_task(void*) {
         cJSON* beacon = cJSON_CreateObject();
         cJSON_AddStringToObject(beacon, "id", beam_crypto::device_id().c_str());
         cJSON_AddStringToObject(beacon, "name", g_device_name.c_str());
+        cJSON_AddStringToObject(beacon, "kind", "PINGANILLO");
         cJSON_AddNumberToObject(beacon, "tcpPort", BEAM_TCP_PORT);
         char* text = cJSON_PrintUnformatted(beacon);
         if (text) {
@@ -333,37 +341,17 @@ void beacon_send_task(void*) {
     }
 }
 
-void accept_task(void*) {
-    while (true) {
-        struct sockaddr_in client_addr{};
-        socklen_t len = sizeof(client_addr);
-        int client_fd = accept(g_tcp_server_socket, (struct sockaddr*)&client_addr, &len);
-        if (client_fd < 0) continue;
-        // El handshake entrante puede bloquear un rato; que no frene el accept() de otros peers.
-        xTaskCreate([](void* arg) {
-            int fd = reinterpret_cast<intptr_t>(arg);
-            perform_handshake(fd, /*is_initiator=*/false);
-            vTaskDelete(nullptr);
-        }, "beam_accept_hs", 6144, reinterpret_cast<void*>(static_cast<intptr_t>(client_fd)), 5, nullptr);
-    }
-}
-
 } // namespace
 
 void start(const std::string& device_name, MessageHandler on_message) {
     g_device_name = device_name;
     g_on_message = std::move(on_message);
     g_peers_mutex = xSemaphoreCreateMutex();
+    load_bonded_id();
 
     g_udp_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     int enable = 1;
     setsockopt(g_udp_socket, SOL_SOCKET, SO_BROADCAST, &enable, sizeof(enable));
-    setsockopt(g_udp_socket, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
-    struct sockaddr_in udp_addr{};
-    udp_addr.sin_family = AF_INET;
-    udp_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    udp_addr.sin_port = htons(BEAM_BEACON_PORT);
-    bind(g_udp_socket, (struct sockaddr*)&udp_addr, sizeof(udp_addr));
 
     g_tcp_server_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     setsockopt(g_tcp_server_socket, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
@@ -375,11 +363,11 @@ void start(const std::string& device_name, MessageHandler on_message) {
     listen(g_tcp_server_socket, 4);
 
     xTaskCreate(beacon_send_task, "beam_beacon_tx", 4096, nullptr, 4, nullptr);
-    xTaskCreate(beacon_listen_task, "beam_beacon_rx", 4096, nullptr, 4, nullptr);
     xTaskCreate(accept_task, "beam_accept", 4096, nullptr, 5, nullptr);
 
-    ESP_LOGI(TAG, "Beam iniciado: id=%s tcpPort=%d beaconPort=%d",
-        beam_crypto::device_id().c_str(), BEAM_TCP_PORT, BEAM_BEACON_PORT);
+    ESP_LOGI(TAG, "Beam iniciado: id=%s tcpPort=%d beaconPort=%d bonded=%s",
+        beam_crypto::device_id().c_str(), BEAM_TCP_PORT, BEAM_BEACON_PORT,
+        g_bonded_android_id.empty() ? "no (FABRICA)" : g_bonded_android_id.c_str());
 }
 
 int send_to_all(const std::vector<uint8_t>& data) {
@@ -398,6 +386,22 @@ int connected_peer_count() {
     int count = static_cast<int>(g_peers.size());
     xSemaphoreGive(g_peers_mutex);
     return count;
+}
+
+bool is_bonded() { return !g_bonded_android_id.empty(); }
+
+void unlink_and_restart() {
+    xSemaphoreTake(g_peers_mutex, portMAX_DELAY);
+    for (auto& p : g_peers) {
+        auto encrypted = p.channel->encrypt(build_link_state_changed_desvinculado());
+        write_framed(p.fd, encrypted);
+    }
+    xSemaphoreGive(g_peers_mutex);
+
+    clear_bonded_id();
+    ESP_LOGI(TAG, "Desvinculado por pulsación larga; reiniciando a FABRICA");
+    vTaskDelay(pdMS_TO_TICKS(200)); // deja salir el aviso por el socket antes de reiniciar
+    esp_restart();
 }
 
 } // namespace beam_protocol

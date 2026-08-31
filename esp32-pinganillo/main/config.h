@@ -25,6 +25,24 @@
 #define NVS_KEY_EC_PRIVATE   "ec_priv"
 #define NVS_KEY_EC_PUBLIC    "ec_pub_der"
 
+// Vinculación (PROJECT.md §2/§3): el pinganillo solo guarda si ya está vinculado
+// y con qué deviceId de Android — el resto de estados (FABRICA/DESCUBRIENDO/
+// VINCULANDO/DESVINCULADO) son transitorios y no necesitan persistirse aparte:
+// "sin bonded_id" ES el estado FABRICA.
+#define NVS_KEY_BONDED_ANDROID_ID "bonded_id"
+
+// ---------------------------------------------------------------------------
+// Botón físico — máquina de 3 estados (IDLE/ESCUCHANDO/ESPERANDO_RESPUESTA) con
+// pulsación corta, más pulsación larga (independiente) para desvincular.
+// AJUSTAR el pin a tu cableado real; se evita GPIO0 a propósito porque en la
+// mayoría de placas decide el modo de arranque (mantenerlo pulsado sin querer
+// al encender metería al ESP32 en modo descarga).
+// ---------------------------------------------------------------------------
+#define BUTTON_GPIO_PIN GPIO_NUM_4
+#define BUTTON_LONG_PRESS_MS 3000
+#define BUTTON_POLL_MS 30
+#define RESPONSE_TIMEOUT_MS 30000
+
 // ---------------------------------------------------------------------------
 // Pines I2S — AJUSTAR a la placa/mic/ampli reales. Valores por defecto pensados
 // para un micrófono digital tipo INMP441 (bus I2S_NUM_0) y un ampli+altavoz I2S
