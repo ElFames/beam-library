@@ -16,9 +16,21 @@ kotlin {
             jvmTarget.set(JvmTarget.JVM_11)
         }
     }
-    
+
     jvm()
-    
+
+    // Mismo motivo que en beam/build.gradle.kts: BeamCryptoKit (CryptoKit) se compiló con
+    // deployment target iOS 17 para evitar los shims de back-deployment de Swift, así que
+    // este target debe ser al menos ese mismo mínimo.
+    val iosTargets = listOf(iosArm64(), iosSimulatorArm64())
+    iosTargets.forEach { target ->
+        target.binaries.framework {
+            baseName = "ComposeApp"
+            isStatic = true
+            binaryOption("bundleId", "com.nubax.beam.ComposeApp")
+        }
+    }
+
     sourceSets {
         androidMain.dependencies {
             implementation(compose.preview)
@@ -42,6 +54,13 @@ kotlin {
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutinesSwing)
+        }
+
+        val iosMain by creating {
+            dependsOn(getByName("commonMain"))
+        }
+        iosTargets.forEach { target ->
+            getByName("${target.name}Main").dependsOn(iosMain)
         }
     }
 }

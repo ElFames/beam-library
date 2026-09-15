@@ -1,93 +1,41 @@
 package com.nubax.beam.library.core
 
-import java.security.KeyFactory
-import java.security.KeyPair
-import java.security.KeyPairGenerator
-import java.security.MessageDigest
-import java.security.PrivateKey
-import java.security.PublicKey
-import java.security.Signature
-import java.security.spec.PKCS8EncodedKeySpec
-import java.security.spec.X509EncodedKeySpec
-import java.util.Base64
-import javax.crypto.KeyAgreement
+/**
+ * Handle opaco a la clave privada EC de este dispositivo (o de un par efímero).
+ * Su representación real (java.security.PrivateKey en JVM/Android, SecKeyRef en
+ * iOS...) vive solo en el `actual` de cada plataforma — el resto del módulo nunca
+ * necesita saber qué hay dentro, solo pasarla de vuelta a [BeamCrypto].
+ */
+expect class BeamPrivateKey
+
+/** Par de claves recién generado: el handle opaco de la privada + la pública ya codificada (DER/SPKI). */
+class BeamKeyPair(val privateKey: BeamPrivateKey, val publicKeyEncoded: ByteArray)
 
 /**
  * Utilidades criptográficas SIN estado. Cada conexión mantiene su propio
  * [SecureChannel]; esta clase nunca guarda claves de sesión, así que es segura
  * de compartir entre varias conexiones simultáneas (varios peers a la vez).
  */
-internal object BeamCrypto {
+expect object BeamCrypto {
+    fun generateKeyPair(): BeamKeyPair
 
-    private const val EC_CURVE_BITS = 256
+    /** Para persistir la clave privada (p. ej. en [BeamStorage]) y recuperarla luego. */
+    fun encodePrivateKey(privateKey: BeamPrivateKey): ByteArray
+    fun decodePrivateKey(bytes: ByteArray): BeamPrivateKey
 
-    fun generateKeyPair(): KeyPair {
-        val keyPairGen = KeyPairGenerator.getInstance("EC")
-        keyPairGen.initialize(EC_CURVE_BITS)
-        return keyPairGen.generateKeyPair()
-    }
+    /** Deriva el secreto compartido ECDH crudo entre mi clave privada y la pública (encoded) del otro extremo. */
+    fun ecdh(myPrivateKey: BeamPrivateKey, otherPublicKeyEncoded: ByteArray): ByteArray
 
-    fun decodePublicKey(bytes: ByteArray): PublicKey {
-        val keyFactory = KeyFactory.getInstance("EC")
-        return keyFactory.generatePublic(X509EncodedKeySpec(bytes))
-    }
+    fun sha256(data: ByteArray): ByteArray
 
-    fun decodePrivateKey(bytes: ByteArray): PrivateKey {
-        val keyFactory = KeyFactory.getInstance("EC")
-        return keyFactory.generatePrivate(PKCS8EncodedKeySpec(bytes))
-    }
+    fun sign(privateKey: BeamPrivateKey, data: ByteArray): ByteArray
 
-    /** Deriva el secreto compartido ECDH crudo entre mi clave privada y la pública del otro extremo. */
-    fun ecdh(myPrivateKey: PrivateKey, otherPublicKeyBytes: ByteArray): ByteArray {
-        val otherPublicKey = decodePublicKey(otherPublicKeyBytes)
-        val keyAgreement = KeyAgreement.getInstance("ECDH")
-        keyAgreement.init(myPrivateKey)
-        keyAgreement.doPhase(otherPublicKey, true)
-        return keyAgreement.generateSecret()
-    }
-
-    fun sha256(data: ByteArray): ByteArray =
-        MessageDigest.getInstance("SHA-256").digest(data)
-
-    fun sign(privateKey: PrivateKey, data: ByteArray): ByteArray {
-        val signature = Signature.getInstance("SHA256withECDSA")
-        signature.initSign(privateKey)
-        signature.update(data)
-        return signature.sign()
-    }
-
-    fun verify(publicKey: PublicKey, data: ByteArray, signatureBytes: ByteArray): Boolean {
-        return try {
-            val signature = Signature.getInstance("SHA256withECDSA")
-            signature.initVerify(publicKey)
-            signature.update(data)
-            signature.verify(signatureBytes)
-        } catch (e: Exception) {
-            false
-        }
-    }
+    /** [publicKeyEncoded] en formato DER/SPKI, igual que el que produce [BeamKeyPair.publicKeyEncoded]. */
+    fun verify(publicKeyEncoded: ByteArray, data: ByteArray, signatureBytes: ByteArray): Boolean
 
     /** Código numérico corto para comparación visual humana (estilo "numeric comparison" de BLE). */
-    fun numericFingerprint(sharedSecret: ByteArray, digits: Int = 6): String {
-        val hash = sha256(sharedSecret)
-        val value = ((hash[0].toInt() and 0xFF) shl 16) or
-            ((hash[1].toInt() and 0xFF) shl 8) or
-            (hash[2].toInt() and 0xFF)
-        val bound = intPow10(digits)
-        return (value % bound).toString().padStart(digits, '0')
-    }
-
-    private fun intPow10(n: Int): Int {
-        var result = 1
-        repeat(n) { result *= 10 }
-        return result
-    }
+    fun numericFingerprint(sharedSecret: ByteArray, digits: Int = 6): String
 
     /** ID corto y estable derivado de la clave pública: identifica al dispositivo sin depender de tokens manuales. */
-    fun deviceIdFromPublicKey(publicKeyBytes: ByteArray): String {
-        return sha256(publicKeyBytes).joinToString("") { "%02x".format(it) }.take(16)
-    }
-
-    fun toBase64(bytes: ByteArray): String = Base64.getEncoder().encodeToString(bytes)
-    fun fromBase64(text: String): ByteArray = Base64.getDecoder().decode(text)
+    fun deviceIdFromPublicKey(publicKeyBytes: ByteArray): String
 }

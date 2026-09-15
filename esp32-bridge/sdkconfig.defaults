@@ -1,0 +1,27 @@
+# AP + STA simultáneos (el puente reparte su propia red Y opcionalmente se
+# engancha a la WiFi de casa/oficina para hacer de pasarela NAT hacia internet).
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+
+# NAT: deja pasar tráfico IP entre la interfaz STA (internet real) y la AP (donde
+# se cuelgan móvil/Desktop), y traduce direcciones para que funcione sin que el
+# router de casa sepa nada de la red del puente.
+CONFIG_LWIP_IP_FORWARD=y
+CONFIG_LWIP_IPV4_NAPT=y
+
+# ---------------------------------------------------------------------------
+# Seguridad máxima (PROJECT.md §3) — este dispositivo YA NO habla el protocolo
+# Aircom (no necesita mbedTLS/ECDH/ECDSA/AES-GCM como el "pinganillo" antiguo),
+# así que esos flags se han quitado de aquí. Lo que sí importa ahora es
+# endurecer su propia red WiFi y el propio firmware:
+#
+# - WPA3-SAE + PMF obligatorio: se configuran en código (wifi_setup.cpp), no
+#   aquí — pero confirma que tu SDK los soporta tal cual antes de flashear
+#   una unidad real (ver el comentario en wifi_setup.cpp).
+# - Secure Boot v2 + Flash Encryption: NO están activados por defecto en este
+#   archivo a propósito — son irreversibles una vez grabados en eFuses (un
+#   fallo de configuración deja la unidad inutilizable para siempre), así que
+#   se activan a mano siguiendo la guía oficial de Espressif
+#   ("Secure Boot V2" / "Flash Encryption") unidad por unidad, no vía un
+#   default que se aplique sin darte cuenta a todo lo que compiles con este
+#   repo.
+# ---------------------------------------------------------------------------

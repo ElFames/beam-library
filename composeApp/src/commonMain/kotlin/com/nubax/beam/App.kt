@@ -31,14 +31,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nubax.beam.library.connectivity.HotspotController
-import com.nubax.beam.library.connectivity.PinganilloConnectionState
-import com.nubax.beam.library.connectivity.PinganilloController
-import com.nubax.beam.library.connectivity.PinganilloDefaults
+import com.nubax.beam.library.connectivity.NetworkBridgeConnectionState
+import com.nubax.beam.library.connectivity.NetworkBridgeController
 import com.nubax.beam.library.core.BeamStorage
 import com.nubax.beam.library.core.Log
 import com.nubax.beam.library.core.PeerKind
 import com.nubax.beam.library.sdk.BeamSdk
-import com.nubax.beam.library.sdk.models.AudioMessage
 import com.nubax.beam.library.sdk.models.BeamState
 import com.nubax.beam.library.sdk.models.MediaMessage
 import com.nubax.beam.library.sdk.models.onFailure
@@ -48,9 +46,11 @@ import com.nubax.beam.media.WifiJoiner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
-import java.util.UUID
+import kotlin.uuid.ExperimentalUuidApi
+import kotlin.uuid.Uuid
 
 expect fun isAndroid(): Boolean
+expect fun isIos(): Boolean
 expect fun requiredWifiPermissions(): Array<String>
 expect fun hasWifiPermissions(context: Any): Boolean
 
@@ -64,7 +64,7 @@ fun App(
     fileSaver: ReceivedFileSaver,
     hotspotController: HotspotController? = null,
     wifiJoiner: WifiJoiner? = null,
-    pinganilloController: PinganilloController? = null
+    networkBridgeController: NetworkBridgeController? = null
 ) {
     val beamApplication by remember { mutableStateOf(BeamSdk.init(storage)) }
     val coroutineScope = rememberCoroutineScope()
@@ -72,12 +72,19 @@ fun App(
     val logs by Log.logs.collectAsState()
     val discovered by beamApplication.discoveredDevices.collectAsState()
     val connectedPeers by beamApplication.connectedPeers.collectAsState()
-    val deviceName = if (isAndroid()) "Android" else "Desktop"
-    val myKind = if (isAndroid()) PeerKind.ANDROID else PeerKind.DESKTOP
+    val deviceName = when {
+        isAndroid() -> "Android"
+        isIos() -> "iOS"
+        else -> "Desktop"
+    }
+    val myKind = when {
+        isAndroid() -> PeerKind.MOBILE
+        isIos() -> PeerKind.MOBILE
+        else -> PeerKind.DESKTOP
+    }
 
     val incomingChat by beamApplication.observeIncoming(ChatMessage.serializer()).collectAsState(null)
     val incomingMedia by beamApplication.observeIncoming(MediaMessage.serializer()).collectAsState(null)
-    val incomingAudio by beamApplication.observeIncoming(AudioMessage.serializer()).collectAsState(null)
     val pairingCode by beamApplication.pairingCode.collectAsState()
     val chatLog = remember { mutableStateListOf<String>() }
     var statusMessage by remember { mutableStateOf("Pulsa Iniciar SDK para anunciarte y empezar a descubrir.") }
@@ -87,22 +94,24 @@ fun App(
     var messageField by remember { mutableStateOf("") }
     var joinSsid by remember { mutableStateOf("") }
     var joinPassword by remember { mutableStateOf("") }
+    var bridgeSsid by remember { mutableStateOf("") }
+    var bridgePassword by remember { mutableStateOf("") }
     val codeFieldByDeviceId = remember { mutableStateMapOf<String, String>() }
 
     val hotspotInfo = hotspotController?.hotspot?.collectAsState()?.value
     val hotspotError = hotspotController?.error?.collectAsState()?.value
 
-    val pinganilloState = pinganilloController?.state?.collectAsState()?.value
-    val pinganilloBinder = pinganilloController?.networkBinder?.collectAsState()?.value
+    val bridgeState = networkBridgeController?.state?.collectAsState()?.value
+    val bridgeBinder = networkBridgeController?.networkBinder?.collectAsState()?.value
 
     LaunchedEffect(Unit) {
         beamApplication.linkEvents.collect { event -> chatLog.add("[vinculación] $event") }
     }
 
-    // El binder solo existe en Android (red "solo local" del pinganillo); en Desktop
-    // pinganilloBinder es siempre null y esto no hace nada — unirse a la WiFi ya basta.
-    LaunchedEffect(pinganilloBinder) {
-        pinganilloBinder?.let { beamApplication.attachNetwork(it) } ?: beamApplication.detachNetwork()
+    // El binder solo existe en Android (red "solo local" del puente); en Desktop
+    // bridgeBinder es siempre null y esto no hace nada — unirse a la WiFi ya basta.
+    LaunchedEffect(bridgeBinder) {
+        bridgeBinder?.let { beamApplication.attachNetwork(it) } ?: beamApplication.detachNetwork()
     }
 
     LaunchedEffect(incomingChat) {
@@ -113,17 +122,6 @@ fun App(
         incomingMedia?.let { (peerId, media) ->
             val path = fileSaver.save(media.name, media.bytes)
             chatLog.add("${peerId.take(8)} envió ${media.name} (${media.bytes.size / 1024} KB) -> $path")
-        }
-    }
-
-    // Sirve para el bring-up del pinganillo: confirma visualmente que el audio
-    // capturado por su mic llega de verdad, sin necesitar reproducirlo.
-    LaunchedEffect(incomingAudio) {
-        incomingAudio?.let { (peerId, audio) ->
-            chatLog.add(
-                "${peerId.take(8)} audio: seq=${audio.seq} isFinal=${audio.isFinal} " +
-                    "${audio.pcm.size}B @ ${audio.sampleRateHz}Hz"
-            )
         }
     }
 
@@ -194,7 +192,7 @@ fun App(
                     }
                     OutlinedButton(
                         onClick = {
-                            coroutineScope.launch(Dispatchers.IO) {
+                            coroutineScope.launch(Dispatchers.Default) {
                                 wifiJoiner.join(joinSsid, joinPassword)
                                     .onSuccess { statusMessage = "Unido a $joinSsid" }
                                     .onFailure { statusMessage = "No se pudo unir a $joinSsid: ${it.message}" }
@@ -205,21 +203,38 @@ fun App(
                     ) { Text("Unirse a esa red") }
                 }
 
-                if (pinganilloController != null) {
-                    // Credenciales fijas de fábrica (PinganilloDefaults): a diferencia del
-                    // hotspot del móvil, el pinganillo siempre se anuncia con el mismo
-                    // SSID/clave, así que aquí no hace falta teclear nada.
+                if (networkBridgeController != null) {
+                    // Sin credenciales fijas de fábrica conocidas por la app: SSID/clave son
+                    // los de la tarjeta de la unidad concreta, se teclean una vez, igual que
+                    // unirse a cualquier WiFi nueva (ver PROJECT.md §3).
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = bridgeSsid,
+                            onValueChange = { bridgeSsid = it },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("SSID del puente") },
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = bridgePassword,
+                            onValueChange = { bridgePassword = it },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Contraseña") },
+                            singleLine = true
+                        )
+                    }
                     OutlinedButton(
-                        onClick = { pinganilloController.connect() },
+                        onClick = { networkBridgeController.connect(bridgeSsid, bridgePassword) },
                         modifier = Modifier.fillMaxWidth(0.95f),
-                        enabled = pinganilloState !is PinganilloConnectionState.Connected &&
-                            pinganilloState !is PinganilloConnectionState.Connecting
-                    ) { Text("Vincular pinganillo (${PinganilloDefaults.AP_SSID})") }
+                        enabled = bridgeSsid.isNotBlank() &&
+                            bridgeState !is NetworkBridgeConnectionState.Connected &&
+                            bridgeState !is NetworkBridgeConnectionState.Connecting
+                    ) { Text("Conectar al puente de red") }
 
-                    when (pinganilloState) {
-                        is PinganilloConnectionState.Connecting -> Text("Conectando con el pinganillo...", fontSize = 12.sp)
-                        is PinganilloConnectionState.Connected -> Text("Pinganillo conectado ✓", fontSize = 12.sp)
-                        is PinganilloConnectionState.Failed -> Text("Error: ${pinganilloState.message}", fontSize = 12.sp, color = Color.Red)
+                    when (bridgeState) {
+                        is NetworkBridgeConnectionState.Connecting -> Text("Conectando con el puente...", fontSize = 12.sp)
+                        is NetworkBridgeConnectionState.Connected -> Text("Puente conectado ✓", fontSize = 12.sp)
+                        is NetworkBridgeConnectionState.Failed -> Text("Error: ${bridgeState.message}", fontSize = 12.sp, color = Color.Red)
                         else -> {}
                     }
                 }
@@ -242,16 +257,6 @@ fun App(
                             )
                             if (!device.trusted) {
                                 when (device.kind) {
-                                    PeerKind.PINGANILLO -> {
-                                        // Las credenciales WiFi ya se verificaron al unirse a su
-                                        // red (botón de arriba); aquí solo falta el handshake.
-                                        OutlinedButton(onClick = {
-                                            coroutineScope.launch(Dispatchers.IO) {
-                                                beamApplication.pairPinganillo(device.address, device.port)
-                                                    .onFailure { statusMessage = "Error emparejando: $it" }
-                                            }
-                                        }) { Text("Emparejar pinganillo") }
-                                    }
                                     PeerKind.DESKTOP -> {
                                         val codeField = codeFieldByDeviceId[device.id] ?: ""
                                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -265,7 +270,7 @@ fun App(
                                             OutlinedButton(
                                                 enabled = codeField.isNotBlank(),
                                                 onClick = {
-                                                    coroutineScope.launch(Dispatchers.IO) {
+                                                    coroutineScope.launch(Dispatchers.Default) {
                                                         beamApplication.pairDesktopWithCode(device.address, device.port, codeField)
                                                             .onFailure { statusMessage = "Error emparejando: $it" }
                                                     }
@@ -273,7 +278,7 @@ fun App(
                                             ) { Text("Emparejar") }
                                         }
                                     }
-                                    PeerKind.ANDROID -> {} // Desktop/pinganillo no inician emparejamiento hacia un móvil
+                                    PeerKind.MOBILE -> {} // Desktop no inicia emparejamiento hacia un móvil (sin flujo móvil↔móvil todavía)
                                 }
                             } else {
                                 OutlinedButton(onClick = { beamApplication.unlink(device.id) }) { Text("Desvincular") }
@@ -292,7 +297,7 @@ fun App(
                     )
                     OutlinedButton(
                         onClick = {
-                            coroutineScope.launch(Dispatchers.IO) {
+                            coroutineScope.launch(Dispatchers.Default) {
                                 beamApplication.connectTo(manualHost)
                                     .onFailure { statusMessage = "Error conectando: $it" }
                             }
@@ -322,7 +327,7 @@ fun App(
                         onClick = {
                             val target = connectedPeers.firstOrNull() ?: return@OutlinedButton
                             val text = messageField
-                            coroutineScope.launch(Dispatchers.IO) {
+                            coroutineScope.launch(Dispatchers.Default) {
                                 beamApplication.send(target, ChatMessage(text), ChatMessage.serializer())
                                     .onFailure { statusMessage = "Error enviando: $it" }
                             }
@@ -337,10 +342,10 @@ fun App(
                     enabled = connectedPeers.isNotEmpty(),
                     onClick = {
                         val target = connectedPeers.firstOrNull() ?: return@OutlinedButton
-                        coroutineScope.launch(Dispatchers.IO) {
+                        coroutineScope.launch(Dispatchers.Default) {
                             val picked = imagePicker.pick() ?: return@launch
                             val media = MediaMessage(
-                                id = UUID.randomUUID().toString(),
+                                id = randomMediaId(),
                                 name = picked.name,
                                 description = "",
                                 mimeType = picked.mimeType,
@@ -365,6 +370,9 @@ fun App(
         }
     }
 }
+
+@OptIn(ExperimentalUuidApi::class)
+private fun randomMediaId(): String = Uuid.random().toString()
 
 private fun BeamState.describe(): String = when (this) {
     is BeamState.Connected -> "Conectado con ${this.deviceToken}"

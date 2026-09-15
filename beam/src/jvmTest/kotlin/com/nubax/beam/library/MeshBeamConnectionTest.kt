@@ -39,7 +39,7 @@ class MeshBeamConnectionTest {
 
         try {
             desktop.start("DeviceDesktop", PeerKind.DESKTOP)
-            android.start("DeviceAndroid", PeerKind.ANDROID)
+            android.start("DeviceAndroid", PeerKind.MOBILE)
 
             val code = withTimeout(5_000) { desktop.pairingCode.filterNotNull().first() }
             val pairResult = android.pairDesktopWithCode("127.0.0.1", 19991, code)
@@ -81,6 +81,39 @@ class MeshBeamConnectionTest {
             desktop.shutdown()
             android.shutdown()
             delay(200) // deja que los sockets se cierren limpiamente antes de terminar
+        }
+    }
+
+    @Test
+    fun `un movil puede tener N Desktops activos a la vez sin desvincular los anteriores`() = runBlocking {
+        val desktopA = BeamApplication(InMemoryStorage(), MeshBeamConnection(beaconPort = 18883, tcpPort = 19993))
+        val desktopB = BeamApplication(InMemoryStorage(), MeshBeamConnection(beaconPort = 18884, tcpPort = 19994))
+        val android = BeamApplication(InMemoryStorage(), MeshBeamConnection(beaconPort = 18885, tcpPort = 19995))
+
+        try {
+            desktopA.start("DeviceDesktopA", PeerKind.DESKTOP)
+            desktopB.start("DeviceDesktopB", PeerKind.DESKTOP)
+            android.start("DeviceAndroid", PeerKind.MOBILE)
+
+            val codeA = withTimeout(5_000) { desktopA.pairingCode.filterNotNull().first() }
+            assertTrue(android.pairDesktopWithCode("127.0.0.1", 19993, codeA) is BeamResult.Success)
+
+            val codeB = withTimeout(5_000) { desktopB.pairingCode.filterNotNull().first() }
+            assertTrue(android.pairDesktopWithCode("127.0.0.1", 19994, codeB) is BeamResult.Success)
+
+            // La cardinalidad abierta (PROJECT.md §2.5) exige que emparejar con el segundo
+            // Desktop NO desvincule al primero — a diferencia de lo que sí pasa con MOBILE.
+            val activeDesktops = android.activeDevices(PeerKind.DESKTOP).map { it.deviceId }.toSet()
+            assertEquals(setOf(desktopA.deviceId, desktopB.deviceId), activeDesktops)
+
+            // Cada Desktop, en su propio historial, sigue viendo como mucho 1 móvil activo.
+            assertEquals(android.deviceId, desktopA.activeDevice(PeerKind.MOBILE)?.deviceId)
+            assertEquals(android.deviceId, desktopB.activeDevice(PeerKind.MOBILE)?.deviceId)
+        } finally {
+            desktopA.shutdown()
+            desktopB.shutdown()
+            android.shutdown()
+            delay(200)
         }
     }
 }

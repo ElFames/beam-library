@@ -15,13 +15,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
-import com.nubax.beam.library.connectivity.AndroidPinganilloController
+import com.nubax.beam.library.connectivity.AndroidNetworkBridgeController
 import com.nubax.beam.library.connectivity.LocalHotspotController
 import com.nubax.beam.library.storage.AndroidBeamStorage
 import com.nubax.beam.media.AndroidImagePicker
 import com.nubax.beam.media.AndroidReceivedFileSaver
 
 actual fun isAndroid() = true
+actual fun isIos() = false
 enum class PermissionsState {
     REQUESTING, GRANTED, DENIED
 }
@@ -55,7 +56,7 @@ class MainActivity : ComponentActivity() {
                     imagePicker = imagePicker,
                     fileSaver = AndroidReceivedFileSaver(this),
                     hotspotController = remember { LocalHotspotController(this) },
-                    pinganilloController = remember { AndroidPinganilloController(this) }
+                    networkBridgeController = remember { AndroidNetworkBridgeController(this) }
                 )
             } else {
                 LaunchedEffect(Unit, state) {

@@ -9,9 +9,7 @@ import kotlinx.serialization.Serializable
  * canal que cualquier mensaje normal, pero [MeshBeamConnection] los intercepta y
  * los gestiona internamente en vez de entregárselos a la app vía `observeIncoming`.
  * Se distinguen del payload de aplicación por el campo "type" (el nombre de
- * serialización de cada variante, ver cada @SerialName) — el pinganillo (C++) los
- * construye/parsea a mano por ese mismo campo, así que esos nombres son parte del
- * contrato de red, no solo detalle de implementación Kotlin.
+ * serialización de cada variante, ver cada @SerialName).
  */
 @Serializable
 sealed class ControlMessage {

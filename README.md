@@ -1,4 +1,4 @@
-This is a Kotlin Multiplatform project targeting Android, Desktop (JVM).
+This is a Kotlin Multiplatform project targeting Android, Desktop (JVM) and iOS.
 
 * [/composeApp](./composeApp/src) is for code that will be shared across your Compose Multiplatform applications.
   It contains several subfolders:
@@ -34,6 +34,37 @@ in your IDE’s toolbar or run it directly from the terminal:
   ```shell
   .\gradlew.bat :composeApp:run
   ```
+
+### Build and Run iOS Application
+
+Prueba **Android ↔ Desktop** o **iOS ↔ Desktop** (el emparejamiento por código, §2.4 de
+`PROJECT.md`) sin necesitar el puente de red — útil mientras se monta el hardware.
+
+Requiere Xcode (con al menos un simulador de iOS instalado) y que
+`beam/native/ios/build.sh` se haya ejecutado al menos una vez para compilar la parte
+Swift/CryptoKit de la criptografía (`beam/native/ios/BeamCryptoKit.swift`):
+
+```shell
+./beam/native/ios/build.sh
+```
+
+Luego abre `iosApp/iosApp.xcodeproj` en Xcode, elige un simulador (o tu iPhone, una vez
+configures tu equipo de firma en "Signing & Capabilities") y pulsa ▶. También se puede
+compilar/instalar sin abrir Xcode:
+
+```shell
+xcodebuild build -project iosApp/iosApp.xcodeproj -scheme iosApp -configuration Debug \
+  -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
+```
+
+El primer build de cada configuración (Debug/Release × dispositivo/simulador) tarda más
+porque el "Run Script" del target invoca
+`./gradlew :composeApp:embedAndSignAppleFrameworkForXcode`, que compila `composeApp`
+entero para ese target antes de que Xcode enlace el `.app`.
+
+Nota: unirse al puente de red (`NetworkBridgeController`, PROJECT.md §3) todavía no
+tiene implementación en iOS — el `App` de iOS arranca sin ese controlador. Android↔Desktop
+e iOS↔Desktop sí funcionan end a end (por la misma WiFi, o por código sin compartir red).
 
 ---
 

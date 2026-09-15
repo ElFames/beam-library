@@ -1,21 +1,18 @@
 package com.nubax.beam.library.connectivity
 
-import java.net.DatagramSocket
-import java.net.Socket
-
 /**
- * Ata un socket recién creado a una interfaz/red concreta del sistema, antes de bind/connect.
+ * Marcador portable de "hay un mecanismo para atar sockets a una red concreta del
+ * sistema" (hace falta en Android cuando el puente de red vive en una red "solo
+ * local" pedida vía WifiNetworkSpecifier — ver [NetworkBridgeController]). La firma
+ * real con los tipos de socket concretos (JVM: [java.net.DatagramSocket]/[java.net.Socket])
+ * vive en `JvmNetworkSocketBinder`, en el source set compartido de Android/Desktop
+ * — este marcador es lo único que necesita cruzar a `commonMain` para que
+ * [com.nubax.beam.library.sdk.BeamApplication.attachNetwork] tenga un tipo portable
+ * que aceptar sin filtrar tipos JVM-only a la API pública.
  *
- * Hace falta en Android cuando el pinganillo vive en una red "solo local" pedida vía
- * WifiNetworkSpecifier: sin atar el socket explícitamente a esa red, el tráfico saldría
- * por la ruta por defecto (datos móviles o la WiFi normal del móvil) y nunca llegaría al
- * pinganillo, aunque su interfaz exista y aparezca en NetworkInterface.getNetworkInterfaces().
- *
- * Desktop no lo necesita: ahí la única red activa ya es la del pinganillo (con NAT hacia
- * internet si el pinganillo tiene detrás una WiFi conocida), así que el socket por defecto
- * (sin atar a nada) ya sale por donde tiene que salir.
+ * Desktop no lo necesita (no tiene el concepto de "red solo-local" de Android): ahí
+ * la única red activa ya es la del puente, así que el socket por defecto (sin atar a
+ * nada) ya sale por donde tiene que salir. iOS tampoco lo implementa todavía —
+ * hueco pendiente, ver la cabecera de `IosMeshBeamConnection`.
  */
-interface NetworkSocketBinder {
-    fun bind(socket: DatagramSocket)
-    fun bind(socket: Socket)
-}
+interface NetworkSocketBinder

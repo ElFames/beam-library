@@ -5,9 +5,9 @@ import kotlinx.serialization.Serializable
 
 /**
  * Anuncio UDP periódico: "aquí estoy, soy este id, soy de este tipo". Sin esto no
- * hay discovery. [kind] hace falta para saber, sin necesidad de handshake, si el
- * anunciante es un pinganillo (que nunca conecta hacia fuera — hay que ir siempre
- * a buscarlo) o un desktop (simétrico, aplica el desempate por id de siempre).
+ * hay discovery. [kind] hace falta para saber qué flujo de emparejamiento aplica
+ * (código de Desktop) y para la invariante de cardinalidad del historial (1 móvil
+ * por Desktop, N Desktops por móvil — ver PROJECT.md §2.5).
  */
 @Serializable
 internal data class Beacon(

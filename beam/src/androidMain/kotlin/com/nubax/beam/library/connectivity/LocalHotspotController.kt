@@ -11,11 +11,11 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * Envuelve WifiManager#startLocalOnlyHotspot: crea una red WiFi local bajo demanda,
  * sin internet y sin tocar el hotspot del sistema (no requiere que el usuario active
- * nada a mano). Es la pieza que permite que el pinganillo (o cualquier otro UDIS) se
- * una al móvil aunque no haya ninguna red compartida a mano, por ejemplo en la calle.
+ * nada a mano). Es la pieza que permite que otro UDIS (p. ej. un Desktop) se una al
+ * móvil aunque no haya ninguna red compartida a mano, por ejemplo en la calle.
  *
- * La reserva solo vive mientras esta instancia se mantenga viva: para el pinganillo real
- * hará falta sostenerla desde un foreground service; para esta prueba, mientras la
+ * La reserva solo vive mientras esta instancia se mantenga viva: para uso real hará
+ * falta sostenerla desde un foreground service; para esta prueba, mientras la
  * Activity esté en primer plano es suficiente.
  */
 class LocalHotspotController(context: Context) : HotspotController {

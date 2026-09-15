@@ -68,15 +68,6 @@ class BeamApplication internal constructor(
             .onFailure { _state.value = BeamState.Error(it) }
     }
 
-    /**
-     * Empareja con un pinganillo: [ssid]/[password] son los que trae en su tarjeta
-     * de fábrica. Conocerlos ya es la prueba de autorización — no hace falta ningún
-     * paso de confirmación adicional. La app debe haberse unido a esa red WiFi antes
-     * de llamar a esto (ver PinganilloController).
-     */
-    suspend fun pairPinganillo(host: String, port: Int = 9999): BeamResult<Unit> =
-        beamConnection.pairPinganillo(host, port)
-
     /** Empareja con un Desktop mandando el [code] que se está leyendo en su pantalla. */
     suspend fun pairDesktopWithCode(host: String, port: Int, code: String): BeamResult<Unit> =
         beamConnection.pairDesktopWithCode(host, port, code)
@@ -89,11 +80,14 @@ class BeamApplication internal constructor(
     /** Historial completo de dispositivos (vinculados o no) con los que se ha interactuado. */
     fun linkedDevices(): List<LinkedDevice> = history.all()
 
-    /** El dispositivo activo (vinculado ahora mismo) de un tipo dado, si lo hay. */
+    /** El dispositivo activo (vinculado ahora mismo) de un tipo dado — solo tiene sentido para [PeerKind.MOBILE] (1:1 desde un Desktop). */
     fun activeDevice(kind: PeerKind): LinkedDevice? = history.activeDevice(kind)
 
+    /** Todos los dispositivos activos de un tipo dado — para [PeerKind.DESKTOP] puede haber más de uno (cardinalidad abierta, ver PROJECT.md §2.5). */
+    fun activeDevices(kind: PeerKind): List<LinkedDevice> = history.activeDevices(kind)
+
     /**
-     * Adjunta una red adicional (p. ej. la del pinganillo una vez [com.nubax.beam.library.connectivity.PinganilloController]
+     * Adjunta una red adicional (p. ej. la del puente de red una vez [com.nubax.beam.library.connectivity.NetworkBridgeController]
      * la ha unido) para que el discovery/handshake también intente esa vía. Ver
      * [com.nubax.beam.library.connection.BeamConnection.attachNetwork].
      */

@@ -9,10 +9,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * Transporte de red de Aircom. Simétrico a propósito para Desktop/Android (cualquiera
- * anuncia, descubre, acepta y conecta), pero el pinganillo usa solo la mitad de esto
- * desde su propio firmware C++ (nunca conecta hacia fuera, solo acepta) — ver
- * PROJECT.md §3 y §2 para el resto de asimetrías del modelo de emparejamiento.
+ * Transporte de red de Aircom. Simétrico a propósito (cualquiera anuncia, descubre,
+ * acepta y conecta) — solo hay dos [PeerKind] (MOBILE, DESKTOP). El puente de red
+ * (antes "pinganillo", ver PROJECT.md §3) no habla este protocolo en absoluto: es
+ * infraestructura de red transparente, no un peer.
  */
 internal interface BeamConnection {
     val discoveredDevices: StateFlow<List<DiscoveredDevice>>
@@ -29,9 +29,6 @@ internal interface BeamConnection {
     /** Conexión directa a una IP conocida, saltándose el discovery (fallback manual / tests). */
     suspend fun connectDirect(host: String, port: Int): BeamResult<Unit>
 
-    /** Empareja con un pinganillo: conocer sus credenciales WiFi YA es la prueba de autorización. */
-    suspend fun pairPinganillo(host: String, port: Int): BeamResult<Unit>
-
     /** Empareja con un Desktop enviando el código que se está leyendo en su pantalla. */
     suspend fun pairDesktopWithCode(host: String, port: Int, code: String): BeamResult<Unit>
 
@@ -44,10 +41,10 @@ internal interface BeamConnection {
     /**
      * Añade un enlace de red adicional (más allá del socket por defecto, sin atar) para
      * poder hablar con peers que solo son alcanzables por una interfaz concreta —
-     * típicamente el pinganillo cuando Android lo une como red "solo local" sin perder su
-     * ruta a internet por defecto. Como mucho hay un enlace extra activo a la vez: llamar
-     * de nuevo reemplaza el anterior. No-op por defecto para no forzar a otras
-     * implementaciones (p. ej. tests) a lidiar con esto.
+     * típicamente el puente de red (PROJECT.md §3) cuando Android lo une como red "solo
+     * local" sin perder su ruta a internet por defecto. Como mucho hay un enlace extra
+     * activo a la vez: llamar de nuevo reemplaza el anterior. No-op por defecto para no
+     * forzar a otras implementaciones (p. ej. tests) a lidiar con esto.
      */
     fun attachNetwork(binder: NetworkSocketBinder) {}
 

@@ -5,13 +5,13 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /**
- * Estado de una vinculación, compartido por los tres lados (pinganillo, Android,
- * Desktop) — ver PROJECT.md §2.1.
+ * Estado de una vinculación, compartido por los dos lados (móvil, Desktop) —
+ * ver PROJECT.md §2.1.
  */
 enum class LinkState { FABRICA, DESCUBRIENDO, VINCULANDO, VINCULADO, DESVINCULADO }
 
 /** De qué tipo es el otro extremo — determina qué flujo de emparejamiento aplica. */
-enum class PeerKind { PINGANILLO, DESKTOP, ANDROID }
+enum class PeerKind { DESKTOP, MOBILE }
 
 @Serializable
 data class LinkedDevice(
@@ -26,14 +26,18 @@ data class LinkedDevice(
 /**
  * Sustituye a TrustStore: en vez de solo "confío en este id", guarda un HISTÓRICO
  * de todos los peers con los que se ha intentado/logrado vincular, cada uno con su
- * propio estado. Invariante de `active` (ver PROJECT.md §2.1):
- * - como mucho un `active=true` POR CADA [PeerKind] (así Android puede tener a la
- *   vez un pinganillo activo y un desktop activo, pero pinganillo/desktop, que solo
- *   almacenan un kind, terminan con "como mucho uno activo en total" gratis).
+ * propio estado. Invariante de `active` (ver PROJECT.md §2.1 y §2.5):
+ * - Un móvil puede tener a la vez **N Desktops activos** (sin límite) — la
+ *   cardinalidad "1 Desktop por móvil" de la primera versión queda levantada.
+ * - Un Desktop sigue teniendo como mucho **1 móvil activo**: cada Desktop solo
+ *   puede estar vinculado con un móvil a la vez (esto no cambia).
+ * - Ya no existe `PeerKind.PINGANILLO`: el puente de red (antes "pinganillo") no
+ *   es un peer de Aircom, no aparece en ningún historial.
  */
 internal class DeviceHistoryStore(private val storage: BeamStorage) {
 
     private val json = Json { ignoreUnknownKeys = true }
+    private val lock = BeamLock()
     private var cache: MutableMap<String, LinkedDevice> = load()
 
     private fun load(): MutableMap<String, LinkedDevice> {
@@ -49,36 +53,38 @@ internal class DeviceHistoryStore(private val storage: BeamStorage) {
         storage.writeString(KEY, json.encodeToString(cache.values.toList()))
     }
 
-    @Synchronized
-    fun get(deviceId: String): LinkedDevice? = cache[deviceId]
+    fun get(deviceId: String): LinkedDevice? = lock.withLock { cache[deviceId] }
 
-    @Synchronized
-    fun isActive(deviceId: String): Boolean = cache[deviceId]?.active == true
+    fun isActive(deviceId: String): Boolean = lock.withLock { cache[deviceId]?.active == true }
 
-    @Synchronized
-    fun activeDevice(kind: PeerKind): LinkedDevice? = cache.values.firstOrNull { it.kind == kind && it.active }
+    /** Único activo de este [kind] — solo tiene sentido para [PeerKind.MOBILE] (invariante 1:1 desde un Desktop). */
+    fun activeDevice(kind: PeerKind): LinkedDevice? = lock.withLock { cache.values.firstOrNull { it.kind == kind && it.active } }
 
-    @Synchronized
-    fun all(): List<LinkedDevice> = cache.values.toList()
+    /** Todos los activos de este [kind] — para [PeerKind.DESKTOP] puede haber más de uno (cardinalidad abierta). */
+    fun activeDevices(kind: PeerKind): List<LinkedDevice> = lock.withLock { cache.values.filter { it.kind == kind && it.active } }
+
+    fun all(): List<LinkedDevice> = lock.withLock { cache.values.toList() }
 
     /**
-     * Marca [deviceId] como vinculado y activo, desactivando cualquier otro activo
-     * del MISMO [kind] (la invariante de arriba). Se llama solo desde un flujo de
-     * emparejamiento EXPLÍCITO (credenciales de pinganillo verificadas al unirse a
-     * su WiFi, o código de Desktop confirmado) — nunca automáticamente por el
-     * discovery pasivo.
+     * Marca [deviceId] como vinculado y activo. Se llama solo desde un flujo de
+     * emparejamiento EXPLÍCITO (código de Desktop confirmado) — nunca automáticamente
+     * por el discovery pasivo.
+     *
+     * Para [PeerKind.MOBILE] desactiva cualquier otro móvil activo (invariante "1 móvil
+     * por Desktop", sin cambios). Para [PeerKind.DESKTOP] NO desactiva otros Desktops
+     * activos — un móvil puede acumular tantos Desktops vinculados como quiera.
      */
-    @Synchronized
-    fun link(deviceId: String, kind: PeerKind, name: String, publicKeyBase64: String) {
-        cache.values.filter { it.kind == kind && it.active }.forEach {
-            cache[it.deviceId] = it.copy(active = false, state = LinkState.DESVINCULADO)
+    fun link(deviceId: String, kind: PeerKind, name: String, publicKeyBase64: String) = lock.withLock {
+        if (kind != PeerKind.DESKTOP) {
+            cache.values.filter { it.kind == kind && it.active }.forEach {
+                cache[it.deviceId] = it.copy(active = false, state = LinkState.DESVINCULADO)
+            }
         }
         cache[deviceId] = LinkedDevice(deviceId, kind, name, publicKeyBase64, LinkState.VINCULADO, active = true)
         persist()
     }
 
-    @Synchronized
-    fun unlink(deviceId: String) {
+    fun unlink(deviceId: String) = lock.withLock {
         cache[deviceId]?.let { cache[deviceId] = it.copy(active = false, state = LinkState.DESVINCULADO) }
         persist()
     }
