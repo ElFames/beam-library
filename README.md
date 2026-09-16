@@ -37,8 +37,8 @@ in your IDE’s toolbar or run it directly from the terminal:
 
 ### Build and Run iOS Application
 
-Prueba **Android ↔ Desktop** o **iOS ↔ Desktop** (el emparejamiento por código, §2.4 de
-`PROJECT.md`) sin necesitar el puente de red — útil mientras se monta el hardware.
+Prueba **Android ↔ Desktop** o **iOS ↔ Desktop** (el emparejamiento por código, §2.3 de
+`PROJECT.md`).
 
 Requiere Xcode (con al menos un simulador de iOS instalado) y que
 `beam/native/ios/build.sh` se haya ejecutado al menos una vez para compilar la parte
@@ -62,9 +62,11 @@ porque el "Run Script" del target invoca
 `./gradlew :composeApp:embedAndSignAppleFrameworkForXcode`, que compila `composeApp`
 entero para ese target antes de que Xcode enlace el `.app`.
 
-Nota: unirse al puente de red (`NetworkBridgeController`, PROJECT.md §3) todavía no
-tiene implementación en iOS — el `App` de iOS arranca sin ese controlador. Android↔Desktop
-e iOS↔Desktop sí funcionan end a end (por la misma WiFi, o por código sin compartir red).
+Nota: cuando móvil y Desktop no comparten red, hoy no hay UI que guíe al usuario
+por el Hotspot personal de iOS (PROJECT.md §3.2) — el mecanismo ya funciona (es
+una WiFi normal a la que el Desktop se une con `WifiJoiner`), solo falta la
+pantalla que lo explique paso a paso. Android↔Desktop e iOS↔Desktop funcionan
+end a end por código en cuanto comparten cualquier red.
 
 ---
 

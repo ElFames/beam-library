@@ -1,6 +1,5 @@
 package com.nubax.beam.library.connection
 
-import com.nubax.beam.library.connectivity.NetworkSocketBinder
 import com.nubax.beam.library.core.BeamCrypto
 import com.nubax.beam.library.core.DeviceHistoryStore
 import com.nubax.beam.library.core.DeviceIdentity
@@ -36,14 +35,7 @@ import kotlin.io.encoding.Base64
  * Implementación de [BeamConnection] para iOS, sobre sockets BSD crudos (`PosixSocket.kt`)
  * en vez de `java.net.*` — misma lógica de protocolo/emparejamiento que
  * `MeshBeamConnection` (jvmCommon), solo cambia la capa de transporte. Ver PROJECT.md
- * §2 para el modelo de emparejamiento completo y §3 para el puente de red.
- *
- * `attachNetwork`/`detachNetwork` son no-op aquí TODAVÍA — hueco real, no una decisión
- * de diseño: para que iOS se una al puente de red (PROJECT.md §3) sin perder su ruta a
- * internet por defecto haría falta unirse a la red vía `NEHotspotConfiguration` y atar
- * el socket de Aircom a esa interfaz concreta con `Network.framework`, ninguna de las
- * dos cosas está escrita aquí todavía. Sin esto, hoy iOS solo puede emparejar con
- * Desktop cuando ya comparten red por otra vía (misma WiFi, hotspot de Android...).
+ * §2 para el modelo de emparejamiento completo.
  */
 internal class IosMeshBeamConnection(
     private val beaconPort: Int = 8888,
@@ -237,13 +229,6 @@ internal class IosMeshBeamConnection(
             BeamResult.Failure(e.message ?: "Error de emparejamiento")
         }
     }
-
-    /** No-op TODAVÍA: unir iOS al puente de red sin perder su ruta por defecto no está implementado (ver cabecera de la clase). */
-    override fun attachNetwork(binder: NetworkSocketBinder) {
-        Log.i("attachNetwork ignorado en iOS (no implementado todavía, ver cabecera de la clase)")
-    }
-
-    override fun detachNetwork() {}
 
     private suspend fun acceptLoop() = withContext(Dispatchers.Default) {
         val server = serverFd ?: return@withContext

@@ -1,6 +1,5 @@
 package com.nubax.beam.library.connection
 
-import com.nubax.beam.library.connectivity.NetworkSocketBinder
 import com.nubax.beam.library.core.DeviceHistoryStore
 import com.nubax.beam.library.core.DeviceIdentity
 import com.nubax.beam.library.core.PeerKind
@@ -10,9 +9,11 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Transporte de red de Aircom. Simétrico a propósito (cualquiera anuncia, descubre,
- * acepta y conecta) — solo hay dos [PeerKind] (MOBILE, DESKTOP). El puente de red
- * (antes "pinganillo", ver PROJECT.md §3) no habla este protocolo en absoluto: es
- * infraestructura de red transparente, no un peer.
+ * acepta y conecta) — solo hay dos [PeerKind] (MOBILE, DESKTOP). Cuando no comparten
+ * red ya (fuera de casa/oficina), el móvil comparte su propia conexión (hotspot local
+ * en Android, Hotspot personal en iOS) y el Desktop se une a ella como a cualquier
+ * WiFi — sin ningún dispositivo ni protocolo intermedio (ver PROJECT.md §3, antiguo
+ * hardware ESP32 retirado por completo).
  */
 internal interface BeamConnection {
     val discoveredDevices: StateFlow<List<DiscoveredDevice>>
@@ -37,17 +38,4 @@ internal interface BeamConnection {
 
     suspend fun send(peerId: String, data: ByteArray, onProgress: ((Float) -> Unit)? = null): BeamResult<Unit>
     fun disconnect(peerId: String)
-
-    /**
-     * Añade un enlace de red adicional (más allá del socket por defecto, sin atar) para
-     * poder hablar con peers que solo son alcanzables por una interfaz concreta —
-     * típicamente el puente de red (PROJECT.md §3) cuando Android lo une como red "solo
-     * local" sin perder su ruta a internet por defecto. Como mucho hay un enlace extra
-     * activo a la vez: llamar de nuevo reemplaza el anterior. No-op por defecto para no
-     * forzar a otras implementaciones (p. ej. tests) a lidiar con esto.
-     */
-    fun attachNetwork(binder: NetworkSocketBinder) {}
-
-    /** Cierra y retira el enlace de red adicional, si hay uno activo. */
-    fun detachNetwork() {}
 }

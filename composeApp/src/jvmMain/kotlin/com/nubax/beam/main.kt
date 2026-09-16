@@ -2,7 +2,6 @@ package com.nubax.beam
 
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
-import com.nubax.beam.library.connectivity.DesktopNetworkBridgeController
 import com.nubax.beam.library.storage.DesktopBeamStorage
 import com.nubax.beam.media.DesktopImagePicker
 import com.nubax.beam.media.DesktopReceivedFileSaver
@@ -20,8 +19,7 @@ fun main() = application {
             storage = DesktopBeamStorage(),
             imagePicker = DesktopImagePicker(),
             fileSaver = DesktopReceivedFileSaver(),
-            wifiJoiner = DesktopWifiJoiner(),
-            networkBridgeController = DesktopNetworkBridgeController()
+            wifiJoiner = DesktopWifiJoiner()
         )
     }
 }

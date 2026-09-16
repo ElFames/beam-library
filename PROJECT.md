@@ -1,10 +1,12 @@
 # UDIS / Aircom — Documento de arquitectura y producto
 
-> Estado: v2 tras la conversación de rediseño que retira el pinganillo como wearable
-> de audio y lo reduce a infraestructura de red pura (puente WiFi), abre la
-> cardinalidad de Desktop, y separa el audio/cámara/pantalla de las gafas Ray-Ban
-> Meta como integración de SDK a nivel de app (fuera de Aircom). Se irá actualizando
-> a medida que el diseño evolucione — no es un documento congelado.
+> Estado: v3. La v2 había reducido el ESP32 a un "puente de red" (infraestructura
+> WiFi pura, sin protocolo propio). Esta versión lo retira **por completo** — ni
+> firmware, ni hardware, ni código Kotlin — al confirmar que el mismo problema (no
+> compartir red fuera de casa/oficina) ya lo resuelve el propio móvil compartiendo
+> su conexión (hotspot local en Android, Hotspot personal en iOS), sin ningún
+> dispositivo externo. Se irá actualizando a medida que el diseño evolucione — no
+> es un documento congelado.
 
 ## 1. Visión general
 
@@ -27,10 +29,10 @@ diferencia de la v1, un móvil puede tener **cualquier número de Desktops
 vinculados a la vez** (ver §2.5) — la limitación "solo un PC" era una invariante de
 software, no una limitación de red, y se ha retirado.
 
-El **ESP32 sigue en el hardware**, pero con un rol completamente distinto: ya no es
-un wearable ni habla el protocolo Aircom — es un **puente de red WiFi puro**
-(ver §3), útil solo cuando móvil y Desktop no comparten ninguna otra red (fuera de
-casa/oficina). Es infraestructura transparente, no un peer.
+El **ESP32 se ha retirado por completo** — no queda hardware en el diseño más allá
+de las gafas. Cuando móvil y Desktop no comparten ninguna red (fuera de
+casa/oficina), es el propio **móvil quien comparte su conexión** con el Desktop
+(ver §3) — sin ningún dispositivo externo de por medio.
 
 **Aircom** (antes "Beam") es la librería KMP de transporte que conecta móvil y
 Desktop — descubrimiento, cifrado, emparejamiento, mensajería — pero no sabe nada de
@@ -53,11 +55,10 @@ IA, memoria, ni del wearable; eso vive en la app UDIS que la consume.
                                                 ▼
                                          ┌──────────────┐
                                          │ Servidor nube │  (solo cuenta/backup — NUNCA
-                                         └──────────────┘   transporte de Aircom, ver §3.3)
+                                         └──────────────┘   transporte de Aircom, ver §6)
 
-Puente de red (ESP32, opcional): un AP WiFi más, sin protocolo propio — móvil y
-Desktop se unen a él exactamente como a cualquier otra WiFi cuando no comparten
-ninguna otra red. Ver §3.
+Sin red compartida (fuera de casa/oficina): el propio móvil comparte su conexión
+con el Desktop — sin ESP32, sin ningún dispositivo intermedio. Ver §3.
 ```
 
 ---
@@ -131,9 +132,9 @@ credenciales WiFi se retiró junto con su rol de peer, ver §3):
    aleatorio (p. ej. 6 dígitos) y lo muestra de forma **continua** en su pantalla
    (*Devices*) — no espera ninguna solicitud previa para generarlo.
 2. El móvil descubre el Desktop (beacon Aircom) y lo lista en *Devices*. Esto
-   funciona exactamente igual si comparten la WiFi de casa, si comparten el
-   hotspot del propio móvil, o si ambos se han unido al puente de red del §3 — el
-   protocolo no distingue entre esos casos, es "una red más" en cualquiera.
+   funciona exactamente igual si comparten la WiFi de casa o si comparten la
+   conexión que el propio móvil comparte con el Desktop (§3) — el protocolo no
+   distingue entre esos casos, es "una red más" en cualquiera.
 3. El usuario lo selecciona, mira el código en la pantalla del Desktop, y lo
    teclea en el móvil.
 4. El móvil manda `DesktopPairCodeSubmit(code)`. Si coincide con el que el Desktop
@@ -153,8 +154,8 @@ credenciales WiFi se retiró junto con su rol de peer, ver §3):
 Existía un flujo de emparejamiento por credenciales WiFi específico para el
 pinganillo (conocer el SSID/clave de su AP era la prueba de autorización, con
 autovinculación al primer Android que completara el handshake). **Se ha retirado
-por completo** junto con su rol de peer de Aircom — ver §3 para el porqué y en qué
-se ha convertido ese hardware. `PairPinganillo`, `PeerKind.PINGANILLO` y todo el
+por completo** junto con el propio hardware — ver §3 para el porqué y para la
+solución que lo sustituye. `pairPinganillo`, `PeerKind.PINGANILLO` y todo el
 código de acceptor asociado ya no existen en el repo.
 
 ### 2.5 Cardinalidad (resumen)
@@ -209,21 +210,22 @@ El handshake, en cada conexión nueva:
 
 Implementación: `BeamCrypto`/`SecureChannel` (jvmCommon vía `java.security`/
 `javax.crypto`; iOS vía CryptoKit por cinterop, `beam/native/ios/BeamCryptoKit.swift`).
-Es equivalente en espíritu a TLS con ECDHE + autenticación por firma. El puente de
-red del §3 **no participa de nada de esto** — no tiene identidad ni hace handshake.
+Es equivalente en espíritu a TLS con ECDHE + autenticación por firma.
 
 ---
 
-## 3. Puente de red (firmware ESP32, C++) — antes "pinganillo"
+## 3. Compartir red sin router (sin hardware) — antes el "puente ESP32"
 
-> Cambio de rol respecto a la v1 de este documento: el ESP32 ya no es un wearable
-> de audio ni un peer de Aircom. El wearable de audio/cámara/pantalla ahora son las
-> **gafas Ray-Ban Meta**, integradas directamente en la app móvil vía el SDK de
-> Meta — eso vive en la app, no aquí, y no se documenta en este repo. El ESP32 se
-> ha reducido a lo que sigue: infraestructura de red pura. Código en
-> [`esp32-bridge/`](./esp32-bridge) (antes `esp32-pinganillo/`).
+> Historial de esta sección, porque vale la pena que quede escrito: la v1 de este
+> documento tenía aquí un wearable de audio ESP32 (el "pinganillo"), hablando el
+> protocolo Aircom como un peer más. La v2 lo redujo a un "puente de red" — un AP
+> WiFi sin protocolo propio, solo para los casos sin red compartida. Esta v3 lo
+> **retira del todo** — ni firmware, ni hardware, ni código Kotlin — al confirmar
+> que el propio móvil ya resuelve el mismo problema sin ningún dispositivo externo.
+> El wearable de audio/cámara/pantalla es hoy las **gafas Ray-Ban Meta**, integradas
+> por SDK directamente en la app — fuera de Aircom, no se documenta aquí.
 
-### 3.1 Por qué existe y cuándo se usa
+### 3.1 El problema que había que resolver
 
 Aircom descubre y empareja por beacon UDP + handshake TCP — funciona sin ningún
 código especial siempre que móvil y Desktop **compartan la misma red WiFi** (ver
@@ -234,64 +236,50 @@ un servidor, ver §6) y las tecnologías de "WiFi P2P sin router" de cada fabric
 un Android no puede hablar WiFi Direct con un iPhone ni al revés, por diseño de
 cada fabricante, no por falta de una librería.
 
-La solución que sí cruza cualquier combinación de plataformas es la más antigua y
-aburrida: un **punto de acceso WiFi normal** (modo estación 802.11, no ningún
-protocolo P2P) al que cualquiera se une como a cualquier WiFi. Eso es exactamente
-lo que hace este dispositivo — nada más.
+Se evaluaron y descartaron, en orden: un relay en la nube (rompe el requisito
+100% offline), un dispositivo ESP32 propio haciendo de AP neutral (funcionaba,
+pero añadía hardware, fabricación, logística de tarjetas SIM-like — innecesario
+si hay una vía sin hardware), y repartir el internet del móvil hacia ese ESP32
+por Bluetooth (descartado por incompatibilidad WPA3/Bluetooth-Classic entre
+chips y por que ESP-IDF no trae el perfil PAN/BNEP de fábrica).
 
-**Se evaluó y se descartó** que además repartiera el internet del móvil recibido
-por Bluetooth (tethering PAN): solo el ESP32 clásico tiene Bluetooth Classic real
-(los C3/S3, que sí tienen WPA3 bien soportado, son BLE-only), y ESP-IDF no trae el
-perfil PAN/BNEP implementado de fábrica — habría que escribirlo desde cero sobre
-L2CAP. Por eso este firmware es **solo WiFi, sin ninguna pieza de Bluetooth**. Si
-el Desktop no tiene WiFi de casa configurada en el puente (§3.3) ni conexión por
-Ethernet, se queda sin internet general mientras lo use — límite aceptado de ir
-100% offline (ver §6).
+### 3.2 La solución: el móvil comparte su propia conexión
 
-### 3.2 Qué hace (y qué YA NO hace)
+No hace falta ningún dispositivo intermedio — **el móvil ya puede compartir su
+conexión con el Desktop directamente**, con mecanismos nativos de cada plataforma:
 
-1. Levanta su propio AP con SSID/contraseña **únicos de fábrica** (tarjeta física
-   tipo SIM, igual que el pinganillo original) y **WPA3-SAE + PMF (802.11w)
-   obligatorio** — más seguro que la mayoría de routers domésticos, que siguen en
-   WPA2 sin PMF. Ver `esp32-bridge/main/wifi_setup.cpp`.
-2. Si además se le configura la WiFi de casa/oficina (portal HTTP en
-   `192.168.4.1`, sin cambios respecto al diseño original), se conecta a ella
-   como cliente y hace NAT: quien se une a su AP recibe internet de forma
-   transparente.
-3. Nada más. **No tiene identidad criptográfica, no hace handshake, no aparece en
-   ningún historial de vinculación, no interpreta el protocolo Aircom.** Se ha
-   retirado por completo: `beam_crypto.cpp`, `beam_protocol.cpp`, el micrófono/
-   altavoz I2S, el botón de 3 estados, y toda la máquina de estados de
-   vinculación local que tenía la v1 de este documento. Móvil y Desktop se hablan
-   entre ellos exactamente igual que si compartieran cualquier otra WiFi.
+- **Android**: `WifiManager.startLocalOnlyHotspot()` — la app tiene un botón
+  ("Activar hotspot local") que levanta un hotspot temporal con SSID/clave
+  aleatorios. **No comparte internet a propósito** (restricción deliberada de
+  Android para este API) — solo sirve para que el Desktop se una y compartan red
+  para Aircom, no para darle internet general al Desktop.
+- **iOS**: **Hotspot personal** (Ajustes → Hotspot personal, o el Centro de
+  Control) — activado a mano por el usuario, **no por la app**: Apple no expone
+  ninguna API para que una app de terceros lo active. A diferencia del de Android,
+  este **sí comparte internet real** (datos móviles) con quien se una.
+- En ambos casos, el Desktop se une a esa red exactamente igual que a cualquier
+  WiFi (`WifiJoiner`/`DesktopWifiJoiner`, ya construido) — tecleando el SSID/clave
+  que el móvil muestra en pantalla. En cuanto están en la misma red, el beacon y
+  el handshake de Aircom funcionan exactamente igual que en cualquier WiFi, sin
+  ningún código adicional.
 
-### 3.3 Seguridad reforzada (más allá de lo habitual)
+La diferencia entre plataformas es solo **quién pulsa qué botón** (la app en
+Android, Ajustes del sistema en iOS) — no una diferencia de capacidad real: las
+dos consiguen el mismo resultado (móvil y Desktop en la misma red), y por eso ya
+no hace falta ningún hardware externo para cubrir ambas.
 
-Pedido explícitamente para este dispositivo — "más seguro que un router normal":
+### 3.3 Limitaciones aceptadas
 
-- **WPA3-SAE + PMF obligatorio** en el AP (§3.2) — cierra el vector de deauth que
-  sí funciona contra la mayoría de APs domésticos.
-- **Secure Boot V2 + Flash Encryption** recomendados, pero **deliberadamente NO
-  activados por defecto** en `sdkconfig.defaults` — son operaciones irreversibles
-  sobre eFuses del chip (un fallo de configuración inutiliza la unidad para
-  siempre). Se activan a mano, unidad por unidad, siguiendo la guía oficial de
-  Espressif — nunca como un default que se aplique sin darse cuenta.
-- Chip recomendado: **ESP32-S3** (WPA3 + aceleración cripto en hardware para el
-  Secure Boot/Flash Encryption de arriba, y hay módulos ultra pequeños — Seeed
-  XIAO ESP32-S3, Adafruit QT Py ESP32-S3 — que caben en un colgante/pulsera). No
-  hace falta Bluetooth Classic con este diseño (§3.1), así que no hay motivo para
-  usar el ESP32 clásico.
-- No existe hoy un producto comercial en formato colgante/pulsera que haga esto —
-  lo más cercano son los routers de viaje de bolsillo (GL.iNet Mango y similares),
-  de ahí que se construya a medida.
-
-### 3.4 Identidad de fábrica
-
-Cada unidad física, al flashear, recibe SSID/contraseña de su AP WiFi **únicos por
-unidad**, entregados al usuario en una tarjeta física impresa (mismo modelo que
-una SIM). A diferencia del pinganillo original, **no hay `deviceId` ni keypair
-criptográfica que grabar** — este dispositivo no tiene identidad de red en el
-sentido de Aircom, solo una red WiFi con nombre y clave.
+- **Android**: el Desktop no recibe internet a través del hotspot local (es
+  "solo local" por diseño de la API) — si lo necesita y no tiene Ethernet, se
+  queda sin internet general mientras dura la sesión, igual que ya asumíamos
+  como límite de ir 100% offline.
+- **iOS**: sí hay internet de propina (Hotspot personal comparte datos móviles
+  de verdad), pero activar y compartir el SSID/clave es un paso manual del
+  usuario en Ajustes, no algo que la app pueda automatizar.
+- Sigue aplicando el límite de fondo ya aceptado: **proximidad real** — esto
+  nunca sustituye a "estar en el mismo sitio", solo evita depender de que haya
+  ya una red de por medio (router de casa/oficina).
 
 ---
 
@@ -316,8 +304,9 @@ raíz de ellas (auditoría/memoria de "qué hice y cuándo").
 - **Móvil**: lista de Desktops descubiertos (pueden ser varios, ver §2.5). Al
   seleccionar uno, pide el código que se está mostrando en su pantalla — es la
   única posibilidad de emparejamiento que existe. Si no comparte red con ningún
-  Desktop (fuera de casa/oficina), aquí también se ofrece unirse al puente de
-  red del §3 (SSID/clave de su tarjeta) antes de que aparezca nada que emparejar.
+  Desktop (fuera de casa/oficina), aquí también se ofrece compartir la conexión
+  del propio móvil (§3: hotspot local en Android; en iOS, instrucciones para
+  activar el Hotspot personal en Ajustes) antes de que aparezca nada que emparejar.
 
 ### 4.4 Pantalla Ajustes
 
@@ -376,15 +365,8 @@ Alcance: sesiones/credenciales de usuario y backup de la memoria (capas del §5)
 entre móvil y Desktop son P2P, 100% offline, y así se ha mantenido deliberadamente
 tras evaluar (y descartar) un relay en la nube como solución al problema de "no
 comparten red": rompería el requisito de que el protocolo funcione sin depender de
-internet en ningún momento. Ver §3.1 para la solución que sí se adoptó (el puente
-de red).
-
-> Nota histórica: la v1 de este documento tenía aquí el contrato de registro de
-> propiedad del pinganillo (`deviceId → ssid/password`, para recuperar credenciales
-> perdidas). Ya no aplica — el puente de red (§3) no tiene `deviceId` ni identidad
-> que registrar. Si se quiere poder recuperar el SSID/clave de una unidad perdida,
-> haría falta decidir algún otro identificador (p. ej. un número de serie impreso
-> en la tarjeta) — no se ha diseñado, queda pendiente si se necesita.
+internet en ningún momento. Ver §3 para la solución que sí se adoptó (el móvil
+comparte su propia conexión, sin ningún servidor ni hardware de por medio).
 
 No existe código de servidor en este repo todavía; esta sección es el contrato a
 implementar cuando se aborde el backend.
@@ -396,66 +378,55 @@ implementar cuando se aborde el backend.
 **Hecho y verificado (Kotlin, con tests reales — no solo compilado):**
 - ✅ `PeerKind.PINGANILLO` retirado del enum — solo `DESKTOP`/`MOBILE`.
 - ✅ `DeviceHistoryStore.link()` abierto a **N Desktops activos por móvil** (antes
-  1), manteniendo 1 móvil activo por Desktop. Test nuevo en `MeshBeamConnectionTest`
-  que lo verifica end-to-end (dos Desktops, un móvil, ninguno se desvincula al
-  vincular al otro).
+  1), manteniendo 1 móvil activo por Desktop. Test en `MeshBeamConnectionTest` que
+  lo verifica end-to-end (dos Desktops, un móvil, ninguno se desvincula al vincular
+  al otro).
 - ✅ Todo el código de emparejamiento/acceptor del pinganillo retirado de
-  `MeshBeamConnection` e `IosMeshBeamConnection` (`PairingIntent.PinganilloCredentials`,
-  `pairPinganillo`, la rama de auto-link `myKind == PINGANILLO`).
-- ✅ `AndroidPinganilloController`/`DesktopPinganilloController`/`PinganilloController`
-  renombrados a `*NetworkBridgeController` — mismo mecanismo (red "solo local" en
-  Android vía `WifiNetworkSpecifier`, join directo en Desktop vía `networksetup`),
-  ahora con SSID/clave tecleados por el usuario en vez de un default fijo
-  (`PinganilloDefaults` eliminado). Android usa `setWpa3Passphrase` (antes WPA2).
-- ✅ `AudioMessage` y `ManualHandshakeHarness` retirados (sin uso: nadie manda audio
-  por Aircom, y el harness solo validaba el handshake contra el firmware del
-  pinganillo, que ya no existe).
-- ✅ Demo (`composeApp`) actualizada: sin botón de "vincular pinganillo" con SSID
-  fijo, ahora un campo SSID/clave genérico para el puente de red; sin la rama de
-  audio del pinganillo en el chat de la demo.
-
-**Hecho, escrito pero SIN poder probarse aquí (firmware C++, sin hardware/toolchain):**
-- `esp32-bridge/` (antes `esp32-pinganillo/`): firmware reducido a AP+STA+NAT puro,
-  sin ninguna pieza de Aircom/cripto/audio. WPA3-SAE + PMF en el AP. Ver el propio
-  README para qué sigue sin poder probarse sin hardware real (AP+STA+NAT de
-  verdad, y confirmar los nombres exactos de campo/constante de WPA3 contra la
-  versión de ESP-IDF en uso).
+  `MeshBeamConnection` e `IosMeshBeamConnection`.
+- ✅ **ESP32 retirado del todo, en una segunda pasada** — no solo el firmware: se
+  eliminó también `NetworkBridgeController`/`AndroidNetworkBridgeController`/
+  `DesktopNetworkBridgeController`, `NetworkSocketBinder`/`JvmNetworkSocketBinder`,
+  y `attachNetwork`/`detachNetwork` de `BeamConnection`/`BeamApplication`/
+  `MeshBeamConnection`/`IosMeshBeamConnection` — quedaban muertos en cuanto se
+  confirmó que el móvil compartiendo su propia conexión (§3) cubre lo mismo sin
+  hardware. El directorio `esp32-bridge/` (y antes `esp32-pinganillo/`) ya no
+  existe en el repo.
+- ✅ `AudioMessage` y `ManualHandshakeHarness` retirados (sin uso).
+- ✅ Demo (`composeApp`) rediseñada: logs/dispositivos/chat en secciones con
+  borde, flujo principal reordenado, y las opciones de red que no son el camino
+  normal (hotspot de reencuentro, IP manual) escondidas detrás de un desplegable
+  "Opciones avanzadas de red", plegado por defecto.
 
 **Todavía no empezado:**
 - Pantallas UDIS: Chat, Historial, Devices, Ajustes, Drive (la app en sí, más
   allá de la demo de `composeApp`).
-- `NetworkBridgeController` en iOS (unirse al puente sin perder la ruta a internet
-  por defecto — necesita `NEHotspotConfiguration` + atar el socket a esa interfaz
-  con `Network.framework`, ninguna de las dos cosas está escrita).
 - Integración del SDK de Ray-Ban Meta en la app móvil (micrófono/altavoz/cámara/
   pantalla) — vive en la app, no en Aircom; no se ha empezado ni se documenta aquí.
+- Instrucciones en la UI para el flujo manual de Hotspot personal en iOS (§3.2) —
+  hoy el mecanismo ya funciona (es una WiFi normal a la que el Desktop se une),
+  pero falta la pantalla que se lo explique al usuario paso a paso.
 
 **Deliberadamente fuera de esta fase:**
 - Emparejamiento móvil↔móvil (§2.5).
 - Backend real (backup de memoria) — solo el contrato, no la implementación.
-- Reparto de internet del móvil al puente de red vía Bluetooth — evaluado y
-  descartado (§3.1): incompatibilidad WPA3/Bluetooth-Classic entre chips ESP32 y
-  PAN/BNEP no soportado de fábrica en ESP-IDF.
 - Sync automática de galería.
 - Las capas de memoria como funcionalidad de IA real (esto es backend/producto, no Aircom).
 - Rename Beam→Aircom de paquetes (pase aparte).
 
 ## 8. Decisiones ya cerradas (histórico de la conversación de diseño)
 
-1. ✅ El ESP32 deja de ser wearable/peer de Aircom — pasa a ser infraestructura de
-   red pura ("puente de red"), sin crypto ni protocolo propio (§3).
-2. ✅ El wearable de audio/cámara/pantalla pasa a ser las gafas Ray-Ban Meta,
+1. ✅ El wearable de audio/cámara/pantalla pasa a ser las gafas Ray-Ban Meta,
    integradas por SDK directamente en la app móvil — fuera del alcance de Aircom.
-3. ✅ Cardinalidad Desktop abierta a N por móvil (antes 1) — invariante de
+2. ✅ Cardinalidad Desktop abierta a N por móvil (antes 1) — invariante de
    software, sin implicación de red (§2.5).
-4. ✅ Protocolo 100% offline confirmado como requisito duro: sin relay en la nube
-   como solución al problema de "no comparten red" (§3.1, §6) — el límite
-   aceptado es que Aircom solo funciona con proximidad real (misma red WiFi, o el
-   puente cuando no la hay).
-5. ✅ Reparto de internet del móvil al puente vía Bluetooth evaluado y descartado
-   por incompatibilidad de hardware/SDK (§3.1) — el puente es solo-WiFi.
-6. ✅ Seguridad del puente reforzada: WPA3-SAE + PMF obligatorio; Secure Boot/Flash
-   Encryption recomendados pero no forzados por defecto (irreversibles) (§3.3).
-7. ✅ Código de Desktop: se genera y muestra de forma continua mientras no tenga
+3. ✅ Protocolo 100% offline confirmado como requisito duro: sin relay en la nube
+   como solución al problema de "no comparten red" (§6) — el límite aceptado es
+   que Aircom solo funciona con proximidad real.
+4. ✅ **ESP32 retirado del todo** (no solo reducido a "puente de red" como decía la
+   v2): el móvil compartiendo su propia conexión (hotspot local en Android,
+   Hotspot personal manual en iOS) cubre el mismo problema sin ningún hardware
+   externo — ver §3 para el porqué y las dos rondas de evaluación que llevaron
+   hasta aquí (relay en la nube → puente ESP32 → Bluetooth PAN → esta solución).
+5. ✅ Código de Desktop: se genera y muestra de forma continua mientras no tenga
    ningún móvil vinculado; el móvil lo envía directamente con
    `DesktopPairCodeSubmit`, sin paso de solicitud previo (§2.3).

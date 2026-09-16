@@ -1,7 +1,5 @@
 package com.nubax.beam.library.connection
 
-import com.nubax.beam.library.connectivity.JvmNetworkSocketBinder
-import com.nubax.beam.library.connectivity.NetworkSocketBinder
 import com.nubax.beam.library.core.BeamCrypto
 import com.nubax.beam.library.core.BeamProtocol
 import com.nubax.beam.library.core.DeviceHistoryStore
@@ -46,9 +44,7 @@ import kotlin.io.encoding.Base64
 /**
  * Implementación única de [BeamConnection] para Desktop y Android (ambos JVM).
  * Simétrica: cualquier instancia anuncia, descubre, acepta y conecta — solo hay
- * dos [PeerKind] (MOBILE, DESKTOP), ambos hablan el protocolo completo. El
- * "puente de red" (antes pinganillo, ver PROJECT.md §3) no es un peer de Aircom
- * y no aparece aquí en absoluto: es solo una red WiFi más para el discovery.
+ * dos [PeerKind] (MOBILE, DESKTOP), ambos hablan el protocolo completo.
  */
 internal class MeshBeamConnection(
     private val beaconPort: Int = 8888,
@@ -90,14 +86,6 @@ internal class MeshBeamConnection(
     private val peers = mutableMapOf<String, PeerSession>()
     private val connectingIds = mutableSetOf<String>()
     private val pairingResultDeferreds = mutableMapOf<String, CompletableDeferred<BeamResult<Unit>>>()
-
-    // Enlace de red adicional (p. ej. el puente de red cuando Android lo une como red "solo
-    // local"): el socket UDP/servidor por defecto ya escucha en todas las interfaces sin
-    // necesitar nada especial, así que lo único que hace falta atar explícitamente a esta
-    // red es lo que SALE de este dispositivo (beacon y conexión TCP saliente).
-    private var networkBinder: JvmNetworkSocketBinder? = null
-    private var attachedBeaconJob: Job? = null
-    private var attachedSocket: DatagramSocket? = null
 
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
     override val discoveredDevices = _discoveredDevices.asStateFlow()
@@ -269,29 +257,9 @@ internal class MeshBeamConnection(
     // Conexión saliente / entrante
     // ---------------------------------------------------------------------
 
-    private suspend fun openSocket(host: String, port: Int): Socket {
-        // Si hay una red adicional adjuntada (el puente de red en Android, ver
-        // PROJECT.md §3), probamos primero a conectar atando el socket a esa red
-        // explícitamente: un socket normal no encontraría ruta hacia una red "solo
-        // local" y fallaría rápido, así que probamos esta vía primero y si no aplica
-        // (el peer real está en la red por defecto, p. ej. el Desktop en la WiFi de
-        // casa) caemos al camino de siempre sin tocar nada.
-        val binder = networkBinder
-        if (binder != null) {
-            val bound = runCatching {
-                val socket = Socket()
-                binder.bind(socket)
-                socket.connect(java.net.InetSocketAddress(host, port), 4000)
-                socket
-            }
-            bound.getOrNull()?.let { return it }
-        }
-        return Socket(host, port)
-    }
-
     override suspend fun connectDirect(host: String, port: Int): BeamResult<Unit> = withContext(Dispatchers.IO) {
         try {
-            performHandshake(openSocket(host, port), isInitiator = true, intent = null)
+            performHandshake(Socket(host, port), isInitiator = true, intent = null)
             BeamResult.Success(Unit)
         } catch (e: Exception) {
             Log.e("Error conectando a $host:$port -> ${e.message}")
@@ -302,71 +270,13 @@ internal class MeshBeamConnection(
     override suspend fun pairDesktopWithCode(host: String, port: Int, code: String): BeamResult<Unit> = withContext(Dispatchers.IO) {
         val result = CompletableDeferred<BeamResult<Unit>>()
         try {
-            performHandshake(openSocket(host, port), isInitiator = true, intent = PairingIntent.DesktopCode(code, result))
+            performHandshake(Socket(host, port), isInitiator = true, intent = PairingIntent.DesktopCode(code, result))
             withTimeout(codePairingTimeoutMs) { result.await() }
         } catch (e: TimeoutCancellationException) {
             BeamResult.Failure("El desktop no respondió al código a tiempo")
         } catch (e: Exception) {
             Log.e("Error emparejando con desktop $host:$port -> ${e.message}")
             BeamResult.Failure(e.message ?: "Error de emparejamiento")
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Red adicional (puente de red, ver PROJECT.md §3)
-    // ---------------------------------------------------------------------
-
-    override fun attachNetwork(binder: NetworkSocketBinder) {
-        detachNetwork()
-        val jvmBinder = binder as? JvmNetworkSocketBinder
-        if (jvmBinder == null) {
-            Log.e("attachNetwork: binder no es compatible con este transporte JVM, se ignora")
-            return
-        }
-        networkBinder = jvmBinder
-        attachedBeaconJob = scope.launch { attachedBeaconSendLoop(jvmBinder) }
-        Log.i("Red adicional adjuntada (puente de red u otra interfaz local)")
-    }
-
-    override fun detachNetwork() {
-        attachedBeaconJob?.cancel()
-        attachedBeaconJob = null
-        runCatching { attachedSocket?.close() }
-        attachedSocket = null
-        networkBinder = null
-    }
-
-    /**
-     * El socket UDP por defecto ya RECIBE beacons de cualquier interfaz (un socket wildcard
-     * no distingue por qué interfaz llegó el paquete), así que solo hace falta un envío de
-     * beacon adicional atado a la red nueva para que el resto de dispositivos en esa red
-     * (p. ej. tras unirse al puente de red) nos vean a nosotros.
-     */
-    private suspend fun attachedBeaconSendLoop(binder: JvmNetworkSocketBinder) = withContext(Dispatchers.IO) {
-        if (!this@MeshBeamConnection::identity.isInitialized) {
-            Log.e("attachNetwork llamado antes de start(); se ignora")
-            return@withContext
-        }
-        val socket = try {
-            DatagramSocket(null).apply {
-                reuseAddress = true
-                broadcast = true
-                binder.bind(this)
-            }
-        } catch (e: Exception) {
-            Log.e("No se pudo preparar el socket de la red adicional: ${e.message}")
-            return@withContext
-        }
-        attachedSocket = socket
-        val target = InetAddress.getByName("255.255.255.255")
-        while (isActive) {
-            try {
-                val bytes = BeamProtocol.json.encodeToString(currentBeacon()).encodeToByteArray()
-                socket.send(DatagramPacket(bytes, bytes.size, target, beaconPort))
-            } catch (e: Exception) {
-                Log.e("Error enviando beacon por la red adicional: ${e.message}")
-            }
-            delay(beaconIntervalMs)
         }
     }
 

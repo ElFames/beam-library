@@ -3,7 +3,6 @@ package com.nubax.beam.library.sdk
 import com.nubax.beam.library.connection.BeamConnection
 import com.nubax.beam.library.connection.DiscoveredDevice
 import com.nubax.beam.library.connection.LinkEvent
-import com.nubax.beam.library.connectivity.NetworkSocketBinder
 import com.nubax.beam.library.core.BeamStorage
 import com.nubax.beam.library.core.DeviceHistoryStore
 import com.nubax.beam.library.core.DeviceIdentity
@@ -85,15 +84,6 @@ class BeamApplication internal constructor(
 
     /** Todos los dispositivos activos de un tipo dado — para [PeerKind.DESKTOP] puede haber más de uno (cardinalidad abierta, ver PROJECT.md §2.5). */
     fun activeDevices(kind: PeerKind): List<LinkedDevice> = history.activeDevices(kind)
-
-    /**
-     * Adjunta una red adicional (p. ej. la del puente de red una vez [com.nubax.beam.library.connectivity.NetworkBridgeController]
-     * la ha unido) para que el discovery/handshake también intente esa vía. Ver
-     * [com.nubax.beam.library.connection.BeamConnection.attachNetwork].
-     */
-    fun attachNetwork(binder: NetworkSocketBinder) = beamConnection.attachNetwork(binder)
-
-    fun detachNetwork() = beamConnection.detachNetwork()
 
     fun shutdown() {
         beamConnection.stop()
